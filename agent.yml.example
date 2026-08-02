@@ -1,0 +1,34 @@
+# theta-agent configuration file
+# Default location: /etc/theta/agent.yml
+
+server_url: "https://sso.example.com"
+auth_token: "REPLACE_WITH_AGENT_TOKEN"
+location: "default" # Location identifier (e.g., site, datacenter) for naming
+
+capabilities:
+  # ---------------------------------------------------------
+  # Basic Capabilities (Safe, read-only or infrastructure management)
+  # ---------------------------------------------------------
+  
+  # Push CPU, RAM, GPU, and ZFS metrics to the SSO Manager
+  telemetry: true
+  
+  # Allow the SSO Manager to push down SSSD and SSH keys configuration
+  configure_ldap: true
+  
+  # ---------------------------------------------------------
+  # Advanced Capabilities (High risk, remote operations)
+  # ---------------------------------------------------------
+  
+  # Allow remote system reboots via the SSO Manager
+  reboot: false
+  
+  # Allow restarting, starting, or stopping specific systemd services.
+  # Must be an explicit list of allowed service names.
+  # Example: ["gitea", "nginx", "docker"]
+  # Setting to true or [] denies all.
+  service_control: []
+  
+  # CRITICAL: Allow the execution of raw bash scripts sent from the SSO Manager.
+  # Useful for GitOps deployments, but allows remote code execution.
+  arbitrary_bash: false
