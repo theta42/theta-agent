@@ -30,8 +30,8 @@ func main() {
 		cfg.Capabilities.ArbitraryBash,
 	)
 
-	// TODO: Initialize WebSocket connection to SSO Manager
-	// TODO: Start telemetry background loop if capabilities.Telemetry == true
+	// WebSocket connection to SSO Manager
+	go connectWebSocket(cfg)
 
 	// Block until signal is received
 	sigs := make(chan os.Signal, 1)
