@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,7 +20,45 @@ type Config struct {
 	ServerURL    string       `yaml:"server_url"`
 	AuthToken    string       `yaml:"auth_token"`
 	Location     string       `yaml:"location"`
+	PublicKey    string       `yaml:"public_key"` // Ed25519 public key for signed commands
 	Capabilities Capabilities `yaml:"capabilities"`
+}
+
+// ConfigManager handles thread-safe access and reloading of the agent configuration.
+type ConfigManager struct {
+	mu       sync.RWMutex
+	current  *Config
+	configPath string
+}
+
+func NewConfigManager(path string) (*ConfigManager, error) {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	return &ConfigManager{
+		current:    cfg,
+		configPath: path,
+	}, nil
+}
+
+// Get returns a copy of the current configuration.
+func (cm *ConfigManager) Get() *Config {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.current
+}
+
+// Reload re-reads the configuration from disk and updates the active config.
+func (cm *ConfigManager) Reload() error {
+	cfg, err := LoadConfig(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("reload failed: %w", err)
+	}
+	cm.mu.Lock()
+	cm.current = cfg
+	cm.mu.Unlock()
+	return nil
 }
 
 func LoadConfig(path string) (*Config, error) {

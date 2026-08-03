@@ -1,44 +1,86 @@
 # Theta Agent
 
-Theta Agent is a unified endpoint management daemon for the theta42 stack. It replaces legacy bash installation scripts (like `ldap-client`) and one-way metric scripts (`telemetry-agent`) with a powerful, 2-way Command & Control (C2) Go daemon.
+Theta Agent is a unified endpoint management daemon for the theta42 stack. It replaces legacy bash installation scripts and one-way metric scripts with a powerful, 2-way Command & Control (C2) Go daemon.
 
-The agent dials out to the central SSO Manager via a persistent WebSocket connection, enabling:
-- **Continuous Telemetry:** Streams CPU/RAM/ZFS/GPU health to the central inventory.
-- **Dynamic Discovery:** Automatically updates host IP and metadata on changes.
-- **Remote Operations:** Allows SSO Manager administrators to remotely configure LDAP, restart systemd services, or execute maintenance scripts.
+The agent dials out to the central SSO Manager via a persistent WebSocket connection, enabling real-time telemetry, dynamic discovery, and secure remote operations.
+
+## Core Functionality
+
+### 1. Telemetry & Observability
+- **Host Discovery**: Pushes a comprehensive profile (IPs, OS, Kernel, CPU, RAM/Disk) upon connection and automatically updates when network interface IPs change.
+- **Continuous Monitoring**: Streams metrics every 30 seconds:
+  - CPU, RAM, and Root Disk usage.
+  - **ZFS Health**: Monitors pool status via `zpool list`.
+  - **GPU Utilization**: Tracks NVIDIA GPU usage via `nvidia-smi`.
+- **Health Checks**: Sends a periodic heartbeat to the SSO Manager to signal agent viability.
+
+### 2. Remote Operations (C2)
+The agent provides a powerful set of administrative tools, categorized by risk:
+
+#### Standard Operations
+- **Config Reload**: Triggers a reload of `/etc/theta42/agent.yml` from disk without restarting the process.
+- **Log Streaming**: Fetch the last 100 lines of the agent's system logs via the C2 channel.
+
+#### High-Risk Operations (Require Cryptographic Signatures)
+To prevent unauthorized execution, these commands must be signed with a private key corresponding to the `public_key` in `agent.yml`:
+- **Service Control**: Restart approved systemd services.
+- **System Control**: Trigger a full system reboot.
+- **Config Management**: Update `/etc/sssd/sssd.conf` and restart `sssd`.
+- **Remote Execution**: Execute raw bash scripts.
+- **Self-Update**: Securely download, verify (SHA256), and apply a new binary version.
 
 ## The Security Model (Blast Radius & Zero-Trust)
 
-Because Theta Agent runs as `root` (required to configure `/etc/sssd/sssd.conf`, restart services, and read hardware sensors), it represents a high-value target. If the central SSO Manager were compromised, a naive agent would allow an attacker to gain root shell execution on every server in the fleet.
+Because Theta Agent runs as `root`, it is a high-value target. To prevent lateral movement and contain the blast radius, it operates on a **strict, local-first capability matrix**.
 
-To prevent lateral movement and contain the blast radius, **Theta Agent operates on a strict, local-first capability matrix.**
+### Local Configuration Wins
+The agent will **only** execute commands that are explicitly enabled in its local configuration file (`/etc/theta42/agent.yml`). The central SSO Manager cannot override these settings.
 
-### 1. Local Configuration Wins
-The agent will **only** execute commands that are explicitly enabled in its local configuration file (`/etc/theta/agent.yml`). 
-- By default, the agent is locked down to read-only telemetry and basic LDAP configuration.
-- The central SSO Manager cannot override these settings. An administrator must physically (or via local config management) edit the local `agent.yml` file to grant the agent more permissions.
+### Cryptographic Hardening
+All high-risk commands require an Ed25519 signature. The agent verifies the signature against the `public_key` provided in the local config. If the signature is missing or invalid, the command is rejected regardless of the capability matrix.
 
-### 2. The Capability Matrix
-Capabilities are segmented into modules. You only enable what a specific server needs:
+### Capability Matrix
 
-| Capability | Risk Level | Description |
-|------------|------------|-------------|
-| `telemetry` | Safe | Read-only. Pushes system metrics back to the SSO Manager. |
-| `configure_ldap` | Moderate | Allows the SSO manager to push down an updated SSSD configuration file. |
-| `reboot` | High | Allows the SSO Manager to trigger a system reboot. |
-| `service_control` | High | Allows starting/stopping/restarting systemd services. **Must be scoped** to specific services (e.g., `['gitea', 'nginx']`). |
-| `arbitrary_bash` | CRITICAL | Allows the execution of raw bash scripts sent from the SSO Manager. Useful for GitOps deployments on worker nodes, but highly dangerous. |
+| Capability | Risk Level | Description | Impact |
+|------------|------------|-------------|---------|
+| `telemetry` | Safe | Read-only metrics. | Pushes system health to SSO Manager. |
+| `configure_ldap` | Moderate | Configures SSSD. | Updates `/etc/sssd/sssd.conf` and restarts `sssd`. |
+| `reboot` | High | System reboot. | Triggers an immediate host reboot. |
+| `service_control` | High | Service management. | Restarts services listed in the allowed list. |
+| `arbitrary_bash` | CRITICAL | Raw bash execution. | Executes any script sent by the manager as root. |
 
-### 3. Outbound-Only Communication
-The agent does not open any listening ports on the host firewall. It uses a long-lived outbound WebSocket connection to the SSO Manager. 
+## Configuration
 
-### 4. Cryptographic Authentication
-Every agent is issued a unique, long-lived host token during installation. The SSO Manager verifies this token to ensure commands are only routed to the intended host, and telemetry is properly attributed.
+Configuration is stored in YAML format at `/etc/theta42/agent.yml`.
 
-## Example Configuration
-
-See `agent.yml.example` for a secure baseline configuration.
+### Example `agent.yml`
+```yaml
+server_url: "wss://sso.theta42.local"
+auth_token: "your-unique-host-token"
+public_key: "base64-encoded-ed25519-public-key"
+location: "dc-01-rack-12"
+capabilities:
+  telemetry: true
+  configure_ldap: true
+  reboot: true
+  service_control: ["nginx", "gitea", "sssd"]
+  arbitrary_bash: false
+```
 
 ## Installation
 
-*(Coming soon: Build instructions and `theta-agent install` guide)*
+1. **Build**: Compile for your target architecture (see CI/CD artifacts).
+2. **Deploy**: Place the binary in `/usr/local/bin/theta-agent`.
+3. **Configure**: Create `/etc/theta42/agent.yml` with the required token and capabilities.
+4. **Service**: Set up as a systemd unit (example: `/etc/systemd/system/theta-agent.service`).
+
+For the fastest deployment, use the installation script:
+```bash
+curl -fsSL https://sso.example.com/resources/theta-agent/install.sh | sh -s -- "BASE64_ENCODED_CONFIG"
+```
+
+## Development & Testing
+
+The agent uses a decoupled execution engine for safety and testability.
+- Run unit tests: `go test -v ./...`
+- The test suite uses a `MockExecutor` to verify that system commands are only triggered when the corresponding capability is enabled in the configuration.
