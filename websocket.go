@@ -2,11 +2,16 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -83,17 +88,25 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 
 		log.Println("Successfully connected to SSO Manager.")
 
-		// Start telemetry and discovery
-		StartTelemetryLoop(c, cfg, exec)
+		stopCh := make(chan struct{})
+
+		// Start telemetry and discovery with stopCh lifecycle control
+		StartTelemetryLoop(c, cm, exec, stopCh)
 
 		// Heartbeat loop
 		go func() {
 			ticker := time.NewTicker(60 * time.Second)
-			for range ticker.C {
-				hb := WSMessage{Type: "heartbeat", Payload: map[string]interface{}{"timestamp": time.Now().Format(time.RFC3339)}}
-				payload, _ := json.Marshal(hb)
-				if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopCh:
 					return
+				case <-ticker.C:
+					hb := WSMessage{Type: "heartbeat", Payload: map[string]interface{}{"timestamp": time.Now().Format(time.RFC3339)}}
+					payload, _ := json.Marshal(hb)
+					if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
+						return
+					}
 				}
 			}
 		}()
@@ -116,6 +129,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		}
 
 		// Cleanup on disconnect
+		close(stopCh)
 		c.Close()
 
 		log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
@@ -142,15 +156,33 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("ok", "configuration reloaded")
 		}
 	case "fetch_logs":
-		out, err := exec.Execute("journalctl", "-u", "theta-agent", "-n", "100")
+		serviceName, _ := msg.Payload["service"].(string)
+		if serviceName == "" {
+			serviceName = "theta-agent"
+		}
+
+		if serviceName != "theta-agent" && !cfg.Capabilities.CanManageService(serviceName) {
+			log.Printf("Fetch logs rejected for '%s': not in allowed service list", serviceName)
+			sendResponse("error", "service log fetch rejected")
+			return
+		}
+
+		linesCount := 100
+		if l, ok := msg.Payload["lines"].(float64); ok && l > 0 {
+			linesCount = int(l)
+		}
+
+		log.Printf("Fetching logs for service %s (%d lines)...", serviceName, linesCount)
+		out, err := exec.Execute("journalctl", "-u", serviceName, "-n", fmt.Sprintf("%d", linesCount), "--no-pager")
 		if err != nil {
 			log.Printf("Log fetch failed: %v", err)
 			sendResponse("error", "failed to fetch logs")
 			return
 		}
-		resp := map[string]string{
-			"status": "ok",
-			"logs":   string(out),
+		resp := map[string]interface{}{
+			"status":  "ok",
+			"service": serviceName,
+			"logs":    string(out),
 		}
 		respPayload, _ := json.Marshal(resp)
 		c.WriteMessage(websocket.TextMessage, respPayload)
@@ -160,28 +192,25 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", "signature verification failed")
 			return
 		}
-		if !cfg.Capabilities.ArbitraryBash { // Use Bash as a proxy for "dangerous update" capability
+		if !cfg.Capabilities.ArbitraryBash {
 			sendResponse("error", "update capability disabled")
 			return
 		}
 
-		url, _ := msg.Payload["url"].(string)
+		urlStr, _ := msg.Payload["url"].(string)
 		checksum, _ := msg.Payload["sha256"].(string)
-		if url == "" || checksum == "" {
-			sendResponse("error", "missing url or checksum")
+		if urlStr == "" || checksum == "" {
+			sendResponse("error", "missing url or sha256 checksum")
 			return
 		}
 
-		log.Printf("Updating binary from %s...", url)
-		// implementation of download and replace
-		// ... (simplified for now, using a shell command via executor for brevity in this turn)
-		script := fmt.Sprintf("curl -fsSL %s -o /tmp/theta-agent.new && sha256sum -c <(echo '%s  /tmp/theta-agent.new') && mv /tmp/theta-agent.new $(readlink -f /proc/self/exe)", url, checksum)
-		if _, err := exec.Execute("bash", "-c", script); err != nil {
+		log.Printf("Updating binary from %s...", urlStr)
+		if err := downloadAndUpdateBinary(urlStr, checksum); err != nil {
 			log.Printf("Update failed: %v", err)
-			sendResponse("error", "update failed")
+			sendResponse("error", fmt.Sprintf("update failed: %v", err))
 			return
 		}
-		sendResponse("ok", "update applied. restarting agent...")
+		sendResponse("ok", "update applied successfully; restarting agent...")
 		os.Exit(0)
 	case "config":
 		log.Printf("Received config payload: %v", msg.Payload)
@@ -286,4 +315,57 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		log.Printf("Unknown command type: %s", msg.Type)
 		sendResponse("error", "unknown command type")
 	}
+}
+
+func downloadAndUpdateBinary(downloadURL string, expectedSHA256 string) error {
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("http fetch failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected http status: %s", resp.Status)
+	}
+
+	tmpFile, err := os.CreateTemp("", "theta-agent-update-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	hasher := sha256.New()
+	writer := io.MultiWriter(tmpFile, hasher)
+
+	if _, err := io.Copy(writer, resp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to save binary: %w", err)
+	}
+	tmpFile.Close()
+
+	actualSHA256 := fmt.Sprintf("%x", hasher.Sum(nil))
+	if !strings.EqualFold(actualSHA256, strings.TrimSpace(expectedSHA256)) {
+		return fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
+	}
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		return fmt.Errorf("failed to set executable permissions: %w", err)
+	}
+
+	selfPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve current binary path: %w", err)
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(selfPath)
+	if err == nil {
+		selfPath = resolvedPath
+	}
+
+	if err := os.Rename(tmpPath, selfPath); err != nil {
+		return fmt.Errorf("failed to replace binary: %w", err)
+	}
+
+	return nil
 }
