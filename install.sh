@@ -23,10 +23,35 @@ if [ "$EUID" -ne 0 ]; then
   error "This script must be run as root."
 fi
 
+# Install SSSD and PAM integration packages if missing
+install_sssd_deps() {
+  if ! command -v sssd >/dev/null 2>&1; then
+    log "Installing SSSD and PAM integration dependencies..."
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sssd sssd-ldap libnss-sss libpam-sss libsss-sudo pam-auth-update || true
+      if command -v pam-auth-update >/dev/null 2>&1; then
+        pam-auth-update --enable mkhomedir || true
+      fi
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y sssd sssd-ldap sssd-tools || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y sssd sssd-ldap sssd-tools || true
+    elif command -v pacman >/dev/null 2>&1; then
+      pacman -S --noconfirm sssd || true
+    elif command -v zypper >/dev/null 2>&1; then
+      zypper in -y sssd || true
+    fi
+  else
+    log "SSSD is already installed."
+  fi
+}
+
 # 2. Argument Parsing
 URL=""
 TOKEN=""
 B64_CONFIG=""
+INSTALL_SSSD=0
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -37,6 +62,10 @@ while [[ $# -gt 0 ]]; do
     --token)
       TOKEN="$2"
       shift 2
+      ;;
+    --install-sssd|--ldap)
+      INSTALL_SSSD=1
+      shift
       ;;
     *)
       B64_CONFIG="$1"
@@ -50,7 +79,7 @@ if [ -z "$B64_CONFIG" ] && [ -z "$URL" ] || [ -z "$B64_CONFIG" ] && [ -z "$TOKEN
   error "Missing required configuration. Either provide a base64 encoded config, or both --url and --token."
   echo "Usage examples:"
   echo "  sh install.sh \"BASE64_CONFIG\""
-  echo "  sh install.sh --url \"https://sso.local\" --token \"secret-token\""
+  echo "  sh install.sh --url \"https://sso.local\" --token \"secret-token\" --install-sssd"
   exit 1
 fi
 
@@ -85,6 +114,11 @@ capabilities:
 EOF
 fi
 chmod 600 "$CONFIG_FILE"
+
+# 4b. Ensure SSSD dependencies are installed if configure_ldap is enabled
+if [ "$INSTALL_SSSD" -eq 1 ] || grep -q -i "configure_ldap:\s*true" "$CONFIG_FILE" 2>/dev/null; then
+  install_sssd_deps
+fi
 
 # 5. Setup systemd service
 log "Creating systemd service unit..."
