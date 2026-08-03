@@ -1,5 +1,5 @@
 # theta-agent configuration file
-# Default location: /etc/theta/agent.yml
+# Default location: /etc/theta42/agent.yml
 
 server_url: "https://sso.example.com"
 auth_token: "REPLACE_WITH_AGENT_TOKEN"

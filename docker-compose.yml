@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  theta-agent:
+    build:
+      context: .
+    container_name: theta-agent-test
+    volumes:
+      - ./agent.yml.example:/etc/theta42/agent.yml:ro
+    privileged: true # Required for systemctl and root operations
+    network_mode: "host"
+    restart: always
