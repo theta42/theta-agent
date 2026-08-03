@@ -114,38 +114,57 @@ func collectGPUUsage(exec Executor) float64 {
 }
 
 // StartTelemetryLoop manages the initial discovery push and the periodic telemetry stream.
-func StartTelemetryLoop(c *websocket.Conn, cfg *Config, exec Executor) {
+func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopCh <-chan struct{}) {
+	cfg := cm.Get()
+
 	// 1. Immediate Discovery Push
 	pushDiscovery(c, cfg)
+
+	// If telemetry capability is disabled in agent.yml, return early after discovery
+	if !cfg.Capabilities.Telemetry {
+		log.Println("Telemetry capability is disabled in agent.yml; skipping telemetry stream.")
+		return
+	}
 
 	// 2. Periodic Telemetry Stream
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
+		defer ticker.Stop()
 		var lastIPs []string
-		for range ticker.C {
-			// Network Change Detection
-			currentIPs := collectIPs()
-			if !equalSlices(lastIPs, currentIPs) {
-				log.Println("Network change detected. Pushing discovery update...")
-				pushDiscovery(c, cfg)
-				lastIPs = currentIPs
-			}
-
-			telemetry := CollectTelemetryData(exec)
-			payload, _ := json.Marshal(WSMessage{
-				Type: "telemetry",
-				Payload: map[string]interface{}{
-					"cpu_usage_percent":  telemetry.CPUUsagePercent,
-					"ram_usage_percent":  telemetry.RAMUsagePercent,
-					"disk_usage_percent": telemetry.DiskUsagePercent,
-					"zfs_health":         telemetry.ZFSHealth,
-					"gpu_usage_percent":   telemetry.GPUUsage,
-					"timestamp":          telemetry.Timestamp,
-				},
-			})
-			if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
-				log.Printf("Failed to stream telemetry: %v", err)
+		for {
+			select {
+			case <-stopCh:
 				return
+			case <-ticker.C:
+				currentCFG := cm.Get()
+				if !currentCFG.Capabilities.Telemetry {
+					continue
+				}
+
+				// Network Change Detection
+				currentIPs := collectIPs()
+				if !equalSlices(lastIPs, currentIPs) {
+					log.Println("Network change detected. Pushing discovery update...")
+					pushDiscovery(c, currentCFG)
+					lastIPs = currentIPs
+				}
+
+				telemetry := CollectTelemetryData(exec)
+				payload, _ := json.Marshal(WSMessage{
+					Type: "telemetry",
+					Payload: map[string]interface{}{
+						"cpu_usage_percent":  telemetry.CPUUsagePercent,
+						"ram_usage_percent":  telemetry.RAMUsagePercent,
+						"disk_usage_percent": telemetry.DiskUsagePercent,
+						"zfs_health":         telemetry.ZFSHealth,
+						"gpu_usage_percent":   telemetry.GPUUsage,
+						"timestamp":          telemetry.Timestamp,
+					},
+				})
+				if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
+					log.Printf("Failed to stream telemetry: %v", err)
+					return
+				}
 			}
 		}
 	}()
@@ -176,7 +195,7 @@ func equalSlices(a, b []string) bool {
 	return true
 }
 
-func pushDiscovery(c *websocket.Conn, cfg *Config) {
+func pushDiscovery(c MessageWriter, cfg *Config) {
 	discovery := CollectDiscoveryData(cfg)
 	discoveryPayload, _ := json.Marshal(discovery)
 

@@ -33,6 +33,15 @@ func (m *MockExecutor) WriteFile(path string, data []byte, perm os.FileMode) err
 	return nil
 }
 
+func (m *MockExecutor) ReadFile(path string) ([]byte, error) {
+	if m.WrittenFiles != nil {
+		if data, ok := m.WrittenFiles[path]; ok {
+			return data, nil
+		}
+	}
+	return []byte("mock file content"), nil
+}
+
 func TestHandleCommand(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -182,7 +191,8 @@ func TestHandleCommand(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mockConn := &MockConn{}
 			mockExec := &MockExecutor{}
-			handleCommand(tc.cfg, tc.msg, mockConn, mockExec)
+			cm := &ConfigManager{current: tc.cfg}
+			handleCommand(cm, tc.msg, mockConn, mockExec)
 
 			if len(mockConn.Messages) != 1 {
 				t.Fatalf("expected 1 response message, got %d", len(mockConn.Messages))
