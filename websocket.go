@@ -311,6 +311,13 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		respPayload, _ := json.Marshal(resp)
 		c.WriteMessage(websocket.TextMessage, respPayload)
 		return
+	// heartbeat_ack is the server's acknowledgement of the agent's own periodic
+	// heartbeat (the agent sends `heartbeat`, the server answers `heartbeat_ack`).
+	// There is nothing to do with it -- it is not a command to run, and answering
+	// an ack with an error response would inject spurious errors into the
+	// command-response channel every minute. Silently ignore.
+	case "heartbeat_ack":
+		return
 	default:
 		log.Printf("Unknown command type: %s", msg.Type)
 		sendResponse("error", "unknown command type")
