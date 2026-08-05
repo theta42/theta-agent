@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -23,14 +24,55 @@ type WSMessage struct {
 	Payload map[string]interface{} `json:"payload"`
 }
 
+// Application close codes the SSO uses to say "your enrollment is the problem"
+// (PROTOCOL.md §1.1). All three mean retrying quickly is pointless.
+const (
+	closeUnauthorized = 4001 // token was never issued, or is unknown
+	closeSuperseded   = 4002 // another connection took over this enrollment
+	closeRevoked      = 4003 // enrollment revoked or deleted by an admin
+	closeTokenRotated = 4004 // token rotated; agent.yml holds the old one
+)
+
+// How long to wait before retrying after the server rejects our credential.
+// Short enough that a re-enrollment is picked up without a restart, long enough
+// that a decommissioned agent is not a permanent load on the SSO.
+const authRetryInterval = 5 * time.Minute
+
 type MessageWriter interface {
 	WriteMessage(messageType int, data []byte) error
 }
 
+// canonicalize produces the exact bytes the server signed (PROTOCOL.md §5):
+// keys sorted alphabetically, no whitespace, `signature` omitted.
+//
+// encoding/json sorts map keys for us, but by default it also escapes <, > and
+// & as <, > and & -- which Node's JSON.stringify on the server
+// does not. Any payload containing those characters therefore hashed
+// differently on each side and the signature failed. For arbitrary_bash that is
+// most real scripts: `>` redirection and `&&` are everywhere. SetEscapeHTML
+// (false) is what makes the two encoders agree.
+//
+// Encoder.Encode also appends a trailing newline, which must be trimmed or it
+// is signed-over data the server never produced.
+func canonicalize(payload map[string]interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 func verifySignature(cfg *Config, msg WSMessage) bool {
+	// Fail CLOSED. This used to return true when no public key was configured,
+	// which meant an agent installed without a `public_key` would execute
+	// reboot / configure_ldap / arbitrary_bash from anything that could reach
+	// its socket, with no verification at all -- the exact commands the
+	// signature exists to protect. An agent that cannot verify must not act.
 	if cfg.PublicKey == "" {
-		log.Println("No public key configured; skipping signature verification")
-		return true
+		log.Println("Refusing high-risk command: no public_key configured in agent.yml")
+		return false
 	}
 
 	sigB64, ok := msg.Payload["signature"].(string)
@@ -52,7 +94,11 @@ func verifySignature(cfg *Config, msg WSMessage) bool {
 			payloadCopy[k] = v
 		}
 	}
-	canonicalPayload, _ := json.Marshal(payloadCopy)
+	canonicalPayload, err := canonicalize(payloadCopy)
+	if err != nil {
+		log.Printf("Could not canonicalize payload for verification: %v", err)
+		return false
+	}
 
 	pubKeyBytes, err := base64.StdEncoding.DecodeString(cfg.PublicKey)
 	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
@@ -75,12 +121,22 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			log.Fatalf("Invalid ServerURL: %v", err)
 		}
 		u.Path = "/api/agent/ws"
-		u.RawQuery = "token=" + cfg.AuthToken
+		u.RawQuery = "token=" + url.QueryEscape(cfg.AuthToken)
 
-		log.Printf("Connecting to %s", u.String())
+		// Never log u.String(): RawQuery carries the auth token, and agent logs
+		// are routinely shipped around and pasted into issues.
+		log.Printf("Connecting to %s%s", u.Host, u.Path)
 
-		c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		c, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
 		if err != nil {
+			// The server now rejects tokens it did not issue. Retrying a bad
+			// credential every 5s just floods the SSO and its audit log
+			// forever, so back off hard and say plainly what is wrong.
+			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				log.Printf("Server rejected our token (HTTP %d). Enroll this agent in the SSO Directory and put the issued token in agent.yml. Retrying in %s.", resp.StatusCode, authRetryInterval)
+				time.Sleep(authRetryInterval)
+				continue
+			}
 			log.Printf("Dial error: %v. Retrying in 5 seconds...", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -111,11 +167,24 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			}
 		}()
 
+		// Set when the server closes us for an enrollment problem rather than a
+		// transient fault, so the reconnect below can back off instead of
+		// spinning on a credential that will not start working by itself.
+		authRejected := false
+
 		// Read loop
 		for {
 			_, message, err := c.ReadMessage()
 			if err != nil {
-				log.Println("WebSocket read error:", err)
+				// The SSO accepts the upgrade and only then closes with an
+				// application code, so an auth failure surfaces here rather
+				// than at Dial.
+				if websocket.IsCloseError(err, closeUnauthorized, closeRevoked, closeTokenRotated) {
+					authRejected = true
+					log.Printf("Server closed the connection: %v. This agent's token is not valid for that SSO — re-enroll it and update agent.yml.", err)
+				} else {
+					log.Println("WebSocket read error:", err)
+				}
 				break // break read loop, reconnect
 			}
 
@@ -131,6 +200,12 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// Cleanup on disconnect
 		close(stopCh)
 		c.Close()
+
+		if authRejected {
+			log.Printf("Reconnecting in %s.", authRetryInterval)
+			time.Sleep(authRetryInterval)
+			continue
+		}
 
 		log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
 		time.Sleep(5 * time.Second)

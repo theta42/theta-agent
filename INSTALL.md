@@ -2,6 +2,18 @@
 
 Theta Agent is designed for rapid deployment across the fleet. The recommended method is via the "One-Liner" install, which marries the agent to a specific SSO Manager instance.
 
+## Prerequisite: enroll the host
+
+The agent's token is issued by the SSO, not chosen by you. In the SSO open
+**Directory → Install Agent**, name the host, bind it to a host resource, and
+press **Enroll & issue token**. You get:
+
+- the **agent token** — shown once; only its hash is stored
+- the **SSO public key** — pinned by the agent to verify high-risk commands
+
+The modal builds the install command below with both already filled in. A token
+the SSO did not issue is rejected at connect time with close code `4001`.
+
 ## Quick Start (The One-Liner)
 
 The SSO Manager provides a pre-generated installation command. Copy and paste it into your terminal as root:
@@ -15,7 +27,8 @@ curl -fsSL https://sso.example.com/resources/theta-agent/install.sh | sh -s -- "
 ### Option B: Minimal Setup
 Use this for rapid deployment with basic telemetry:
 ```bash
-curl -fsSL https://sso.example.com/resources/theta-agent/install.sh | sh -s -- --url "https://sso.example.com" --token "your-host-token"
+curl -fsSL https://sso.example.com/resources/theta-agent/install.sh | sh -s -- \
+  --url "https://sso.example.com" --token "<ISSUED_TOKEN>" --public-key "<BASE64_PUBLIC_KEY>"
 ```
 
 ### What this does:
