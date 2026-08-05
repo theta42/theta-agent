@@ -1,4 +1,4 @@
-# Theta Agent Protocol Specification (v1.1.0)
+# Theta Agent Protocol Specification (v1.2.0)
 
 This document defines the communication protocol between the `theta-agent` (Client) and the `sso-manager` (Server).
 
@@ -7,8 +7,34 @@ This document defines the communication protocol between the `theta-agent` (Clie
 The agent establishes a persistent outbound WebSocket connection.
 
 - **Endpoint**: `wss://<manager-url>/api/agent/ws`
-- **Authentication**: The agent must provide a unique host token as a query parameter:
-  - `wss://<manager-url>/api/agent/ws?token=<HOST_TOKEN>`
+- **Authentication**: The agent must provide its enrollment token as a query parameter:
+  - `wss://<manager-url>/api/agent/ws?token=<AGENT_TOKEN>`
+
+### 1.1 Enrollment (changed in v1.2.0)
+
+The token **must be issued by the server**. An administrator enrolls the agent in
+the SSO (Directory → Agents, or `POST /api/agent/enroll`), which mints the token,
+stores only its SHA-256, and displays the raw value once. That value goes into
+`auth_token` in `agent.yml`.
+
+Up to v1.1.0 the token was generated in the browser and never recorded
+server-side, so the server accepted *any* string: anyone who could reach
+`/api/agent/ws` could register as a node, publish discovery/telemetry, and
+receive commands addressed to a token they guessed. Tokens the server did not
+issue are now rejected.
+
+The server accepts the WebSocket upgrade before authenticating, so an
+authentication failure arrives as a **close frame**, not an HTTP status:
+
+| Code | Meaning | Agent behaviour |
+| :--- | :--- | :--- |
+| `4001` | Token unknown, or not issued by this server | Back off (5 min); the credential will not fix itself |
+| `4002` | Superseded — another connection authenticated as this agent | Normal reconnect |
+| `4003` | Enrollment revoked or deleted by an administrator | Back off (5 min) |
+| `4004` | Token rotated — `agent.yml` holds the superseded value | Back off (5 min); re-copy the token |
+
+Revocation and rotation both drop any live socket immediately, so they take
+effect without waiting for the agent to reconnect.
 
 ## 2. Message Format
 
@@ -97,9 +123,50 @@ These commands **require** an Ed25519 signature in the payload. The agent verifi
 
 To send a high-risk command:
 1. Create the payload (e.g., `{"script": "uptime"}`).
-2. Canonicalize the JSON (sort keys alphabetically, remove whitespace).
+2. Canonicalize the JSON (see 5.1).
 3. Sign the canonical bytes using the private Ed25519 key.
 4. Add the base64 signature to the payload: `{"script": "uptime", "signature": "..."}`.
 5. Send as a `WSMessage`.
 
 The agent performs the reverse process to verify authenticity before execution.
+
+### 5.1 Canonical form
+
+Both sides must produce **byte-identical** input to sign/verify:
+
+- keys sorted alphabetically
+- no insignificant whitespace
+- the `signature` key omitted
+- **no HTML escaping** — `<`, `>` and `&` are emitted literally
+- no trailing newline
+
+The escaping rule is load-bearing. Go's `encoding/json` escapes those three
+characters by default while JavaScript's `JSON.stringify` does not, so a payload
+containing any of them hashed differently on each side and verification failed.
+For `arbitrary_bash` that is most real scripts (`>` redirection, `&&`). The Go
+client uses `json.Encoder` with `SetEscapeHTML(false)`.
+
+Example — payload `{"script": "echo a > b && c", "comment": "x&y"}` canonicalizes to:
+
+```
+{"comment":"x&y","script":"echo a > b && c"}
+```
+
+### 5.2 The server signing key (changed in v1.2.0)
+
+The server's Ed25519 key pair is **persistent**, stored in OpenBao at
+`secret/agent/signing-key`. `public_key` in `agent.yml` is the base64-encoded raw
+32-byte public key, available from the enrollment response or
+`GET /api/agent/nodes`.
+
+Previously the pair was generated in memory at process start, so it changed on
+every restart and no agent could meaningfully pin it. If the server cannot load
+or persist a key it now **refuses to send high-risk commands** rather than
+signing with a key no agent has seen.
+
+### 5.3 Agent-side verification is fail-closed (changed in v1.2.0)
+
+An agent with no `public_key` configured **rejects** every high-risk command.
+Until v1.1.0 it logged "skipping signature verification" and executed them,
+which meant an agent installed without a key would run `reboot`,
+`configure_ldap` and `arbitrary_bash` from anything that reached its socket.
