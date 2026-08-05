@@ -139,7 +139,11 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 
 func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Executor) {
 	cfg := cm.Get()
-	log.Printf("Received command: %s", msg.Type)
+	// Don't log the server's fire-and-forget heartbeat ack — it arrives every
+	// 60s and is not a command to act on; logging it is pure per-minute noise.
+	if msg.Type != "heartbeat_ack" {
+		log.Printf("Received command: %s", msg.Type)
+	}
 
 	sendResponse := func(status string, message string) {
 		resp, _ := json.Marshal(map[string]string{"status": status, "message": message})
