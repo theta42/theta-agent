@@ -1,10 +1,41 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"testing"
 )
+
+// A fixed key pair for the tests, standing in for the SSO's persisted signing
+// key. High-risk commands must now be genuinely signed: the agent fails closed
+// when no public_key is configured, so these tests sign the way the server
+// does instead of relying on verification being skipped.
+var testPubKey, testPrivKey, _ = ed25519.GenerateKey(nil)
+
+func testPubKeyB64() string {
+	return base64.StdEncoding.EncodeToString(testPubKey)
+}
+
+// sign mirrors the server's canonicalization (sorted keys, no whitespace, no
+// HTML escaping, `signature` omitted) and adds the signature to the payload.
+func sign(t *testing.T, payload map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	canonical, err := canonicalize(payload)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	signed := make(map[string]interface{}, len(payload)+1)
+	for k, v := range payload {
+		signed[k] = v
+	}
+	signed["signature"] = base64.StdEncoding.EncodeToString(ed25519.Sign(testPrivKey, canonical))
+	return signed
+}
 
 type MockConn struct {
 	Messages [][]byte
@@ -44,13 +75,16 @@ func (m *MockExecutor) ReadFile(path string) ([]byte, error) {
 
 func TestHandleCommand(t *testing.T) {
 	tests := []struct {
-		name            string
-		cfg             *Config
-		msg             WSMessage
-		expectedStatus  string
-		expectedCmd     []string
-		expectedFile    string
+		name             string
+		cfg              *Config
+		msg              WSMessage
+		expectedStatus   string
+		expectedCmd      []string
+		expectedFile     string
 		expectedFileCont string
+		// sign the payload with the test key before dispatch, the way the SSO
+		// signs high-risk commands
+		signed bool
 		// heartbeat_ack (and any fire-and-forget ack) must be silently ignored —
 		// no response message, no command, no log noise.
 		expectedNoResponse bool
@@ -69,11 +103,13 @@ func TestHandleCommand(t *testing.T) {
 		{
 			name: "reboot command allowed",
 			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
 				Capabilities: Capabilities{Reboot: true},
 			},
 			msg: WSMessage{
 				Type: "reboot",
 			},
+			signed:         true,
 			expectedStatus: "ok",
 			expectedCmd:    []string{"reboot"},
 		},
@@ -123,6 +159,7 @@ func TestHandleCommand(t *testing.T) {
 		{
 			name: "configure_ldap allowed",
 			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
 				Capabilities: Capabilities{ConfigureLDAP: true},
 			},
 			msg: WSMessage{
@@ -131,10 +168,11 @@ func TestHandleCommand(t *testing.T) {
 					"config": "domain = theta42.local\nserver = sso.local",
 				},
 			},
-			expectedStatus:  "ok",
-			expectedFile:    "/etc/sssd/sssd.conf",
+			signed:           true,
+			expectedStatus:   "ok",
+			expectedFile:     "/etc/sssd/sssd.conf",
 			expectedFileCont: "domain = theta42.local\nserver = sso.local",
-			expectedCmd:     []string{"systemctl", "restart", "sssd"},
+			expectedCmd:      []string{"systemctl", "restart", "sssd"},
 		},
 		{
 			name: "configure_ldap denied",
@@ -153,6 +191,7 @@ func TestHandleCommand(t *testing.T) {
 		{
 			name: "arbitrary_bash allowed",
 			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
 				Capabilities: Capabilities{ArbitraryBash: true},
 			},
 			msg: WSMessage{
@@ -161,6 +200,7 @@ func TestHandleCommand(t *testing.T) {
 					"script": "uptime",
 				},
 			},
+			signed:         true,
 			expectedStatus: "ok",
 			expectedCmd:    []string{"bash", "-c", "uptime"},
 		},
@@ -205,7 +245,11 @@ func TestHandleCommand(t *testing.T) {
 			mockConn := &MockConn{}
 			mockExec := &MockExecutor{}
 			cm := &ConfigManager{current: tc.cfg}
-			handleCommand(cm, tc.msg, mockConn, mockExec)
+			msg := tc.msg
+			if tc.signed {
+				msg.Payload = sign(t, msg.Payload)
+			}
+			handleCommand(cm, msg, mockConn, mockExec)
 
 			if tc.expectedNoResponse {
 				if len(mockConn.Messages) != 0 {
@@ -257,5 +301,69 @@ func TestHandleCommand(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The agent must not execute a high-risk command it cannot verify. This used to
+// return true when no public_key was configured, so an agent installed without
+// one executed reboot / configure_ldap / arbitrary_bash unverified.
+func TestVerifySignatureFailsClosedWithoutPublicKey(t *testing.T) {
+	cfg := &Config{} // no PublicKey
+	msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, map[string]interface{}{"script": "uptime"})}
+	if verifySignature(cfg, msg) {
+		t.Fatal("verifySignature accepted a command with no public_key configured")
+	}
+}
+
+func TestVerifySignatureRejectsWrongKey(t *testing.T) {
+	otherPub, _, _ := ed25519.GenerateKey(nil)
+	cfg := &Config{PublicKey: base64.StdEncoding.EncodeToString(otherPub)}
+	msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, map[string]interface{}{"script": "uptime"})}
+	if verifySignature(cfg, msg) {
+		t.Fatal("verifySignature accepted a signature from a different key")
+	}
+}
+
+func TestVerifySignatureRejectsTamperedPayload(t *testing.T) {
+	cfg := &Config{PublicKey: testPubKeyB64()}
+	payload := sign(t, map[string]interface{}{"script": "uptime"})
+	payload["script"] = "rm -rf /" // swap the script, keep the signature
+	if verifySignature(cfg, WSMessage{Type: "arbitrary_bash", Payload: payload}) {
+		t.Fatal("verifySignature accepted a payload modified after signing")
+	}
+}
+
+// Regression: encoding/json escapes <, > and & by default, but the server's
+// JSON.stringify does not. Any script using redirection or && therefore
+// canonicalized differently on each side and failed verification -- which is
+// most real scripts.
+func TestVerifySignatureAcceptsShellMetacharacters(t *testing.T) {
+	cfg := &Config{PublicKey: testPubKeyB64()}
+	for _, script := range []string{
+		"echo hi > /tmp//out.log",
+		"systemctl is-active nginx && systemctl reload nginx",
+		"grep -c . < /etc/passwd",
+		"a=1 && b=2 && echo \"$a<$b\" > /dev/null",
+	} {
+		msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, map[string]interface{}{"script": script})}
+		if !verifySignature(cfg, msg) {
+			t.Errorf("verifySignature rejected a correctly signed script: %q", script)
+		}
+	}
+}
+
+// The canonical form must be byte-identical to the server's: sorted keys, no
+// whitespace, no HTML escaping, no trailing newline, signature omitted.
+func TestCanonicalizeMatchesServerForm(t *testing.T) {
+	got, err := canonicalize(map[string]interface{}{
+		"script":  "echo a > b && c",
+		"comment": "x&y",
+	})
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	want := `{"comment":"x&y","script":"echo a > b && c"}`
+	if string(got) != want {
+		t.Errorf("canonical form mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
