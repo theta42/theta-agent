@@ -50,6 +50,7 @@ install_sssd_deps() {
 # 2. Argument Parsing
 URL=""
 TOKEN=""
+PUBLIC_KEY=""
 B64_CONFIG=""
 INSTALL_SSSD=0
 
@@ -61,6 +62,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --token)
       TOKEN="$2"
+      shift 2
+      ;;
+    # Base64 of the SSO's raw Ed25519 public key. The agent verifies high-risk
+    # commands (reboot, configure_ldap, arbitrary_bash, update_binary) against
+    # it and REFUSES them when it is absent, so an install without this key can
+    # stream telemetry but cannot be acted on.
+    --public-key)
+      PUBLIC_KEY="$2"
       shift 2
       ;;
     --install-sssd|--ldap)
@@ -79,7 +88,10 @@ if [ -z "$B64_CONFIG" ] && [ -z "$URL" ] || [ -z "$B64_CONFIG" ] && [ -z "$TOKEN
   error "Missing required configuration. Either provide a base64 encoded config, or both --url and --token."
   echo "Usage examples:"
   echo "  sh install.sh \"BASE64_CONFIG\""
-  echo "  sh install.sh --url \"https://sso.local\" --token \"secret-token\" --install-sssd"
+  echo "  sh install.sh --url \"https://sso.local\" --token \"ISSUED_TOKEN\" --public-key \"BASE64_KEY\" --install-sssd"
+  echo ""
+  echo "The token must be issued by the SSO (Directory -> Install Agent enrolls"
+  echo "the host and mints it). Tokens the server did not issue are rejected."
   exit 1
 fi
 
@@ -104,6 +116,7 @@ else
   cat <<EOF > "$CONFIG_FILE"
 server_url: "$URL"
 auth_token: "$TOKEN"
+public_key: "$PUBLIC_KEY"
 location: "unknown"
 capabilities:
   telemetry: true
@@ -114,6 +127,15 @@ capabilities:
 EOF
 fi
 chmod 600 "$CONFIG_FILE"
+
+# An agent with no public_key cannot verify signed commands and will refuse
+# every one of them. That is the safe default, but it is silent at run time, so
+# say it plainly here where the operator is watching.
+if ! grep -qE '^public_key:[[:space:]]*"[^"]+"' "$CONFIG_FILE" 2>/dev/null; then
+  log "WARNING: no public_key configured — this agent will report telemetry but"
+  log "         REFUSE reboot / configure_ldap / arbitrary_bash / update_binary."
+  log "         Re-run with --public-key \"<base64 key>\" (shown at enrollment)."
+fi
 
 # 4b. Ensure SSSD dependencies are installed if configure_ldap is enabled
 if [ "$INSTALL_SSSD" -eq 1 ] || grep -q -i "configure_ldap:\s*true" "$CONFIG_FILE" 2>/dev/null; then
