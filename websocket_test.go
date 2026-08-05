@@ -51,6 +51,9 @@ func TestHandleCommand(t *testing.T) {
 		expectedCmd     []string
 		expectedFile    string
 		expectedFileCont string
+		// heartbeat_ack (and any fire-and-forget ack) must be silently ignored —
+		// no response message, no command, no log noise.
+		expectedNoResponse bool
 	}{
 		{
 			name: "config command success",
@@ -176,6 +179,16 @@ func TestHandleCommand(t *testing.T) {
 			expectedCmd:    nil,
 		},
 		{
+			name: "heartbeat_ack is silently ignored",
+			cfg: &Config{
+				Capabilities: Capabilities{},
+			},
+			msg: WSMessage{
+				Type: "heartbeat_ack",
+			},
+			expectedNoResponse: true,
+		},
+		{
 			name: "unknown command",
 			cfg: &Config{
 				Capabilities: Capabilities{},
@@ -193,6 +206,16 @@ func TestHandleCommand(t *testing.T) {
 			mockExec := &MockExecutor{}
 			cm := &ConfigManager{current: tc.cfg}
 			handleCommand(cm, tc.msg, mockConn, mockExec)
+
+			if tc.expectedNoResponse {
+				if len(mockConn.Messages) != 0 {
+					t.Fatalf("expected no response message, got %d: %v", len(mockConn.Messages), mockConn.Messages)
+				}
+				if len(mockExec.ExecutedCommands) > 0 {
+					t.Errorf("expected no commands to be executed, but got %v", mockExec.ExecutedCommands)
+				}
+				return
+			}
 
 			if len(mockConn.Messages) != 1 {
 				t.Fatalf("expected 1 response message, got %d", len(mockConn.Messages))
