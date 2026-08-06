@@ -5,6 +5,11 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.1] - 2026-08-06
+
+### Fixed
+- **Rebuilt the prebuilt `theta-agent-linux-amd64`.** theta-suite's `setup.sh` installs that committed binary rather than building from source, so a stale one means the fix in this repo never reaches the host. The v1.5.0 binary predated join-key support: an install would have written a `join_key` into `agent.yml` that the running agent did not understand, and it would have looped on `close 4001: Unauthorized`. (Same trap as the v1.3.0 heartbeat fix.)
+
 ## [v1.5.0] - 2026-08-06
 
 Join-key enrollment (protocol v1.2.0 §1.1). Installing the agent with one key is now all it takes to add a host.
