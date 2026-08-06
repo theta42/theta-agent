@@ -3,18 +3,26 @@
 
 server_url: "https://sso.example.com"
 
-# Issued by the SSO when you enroll this host (Directory -> Install Agent, or
-# POST /api/agent/enroll). The server records only its hash and rejects any
-# token it did not issue, so a value invented locally will not connect.
-auth_token: "REPLACE_WITH_ISSUED_AGENT_TOKEN"
+# This agent's own token. Leave EMPTY when installing with a join key -- the
+# agent fills it in itself once the SSO enrolls it. The server records only a
+# hash and rejects any token it did not issue, so a locally invented value will
+# never connect.
+auth_token: ""
 
-# Base64 of the SSO's RAW 32-byte Ed25519 public key -- the `publicKey` value
-# from enrollment or GET /api/agent/nodes. This is NOT a PEM body.
+# The one credential you need to add a host. Used only while auth_token is
+# empty: the SSO exchanges it for this agent's own token + public key on first
+# connect, and the agent then blanks this line. Get one from the SSO
+# (Directory -> Install Agent, or POST /api/agent/join-keys).
+join_key: ""
+
+# Base64 of the SSO's RAW 32-byte Ed25519 public key (NOT a PEM body). Filled in
+# automatically when enrolling with a join key; set it by hand only if you
+# pre-registered this host.
 #
 # Required for any high-risk command. Without it the agent still reports
 # telemetry, but REFUSES reboot / service_restart / configure_ldap /
 # arbitrary_bash / update_binary, because it has no way to verify them.
-public_key: "REPLACE_WITH_SSO_PUBLIC_KEY"
+public_key: ""
 
 location: "default" # Location identifier (e.g., site, datacenter) for naming
 
