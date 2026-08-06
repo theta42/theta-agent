@@ -121,7 +121,21 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			log.Fatalf("Invalid ServerURL: %v", err)
 		}
 		u.Path = "/api/agent/ws"
-		u.RawQuery = "token=" + url.QueryEscape(cfg.AuthToken)
+		// Our own token once enrolled, else the join key. The hostname lets the
+		// server name a self-enrolling host something meaningful instead of a
+		// generated placeholder.
+		q := url.Values{}
+		q.Set("token", cfg.Credential())
+		if hn, err := os.Hostname(); err == nil && hn != "" {
+			q.Set("hostname", hn)
+		}
+		u.RawQuery = q.Encode()
+
+		if cfg.Credential() == "" {
+			log.Printf("No auth_token or join_key in %s -- nothing to authenticate with. Retrying in %s.", cm.configPath, authRetryInterval)
+			time.Sleep(authRetryInterval)
+			continue
+		}
 
 		// Never log u.String(): RawQuery carries the auth token, and agent logs
 		// are routinely shipped around and pasted into issues.
@@ -292,6 +306,24 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		sendResponse("ok", "update applied successfully; restarting agent...")
 		os.Exit(0)
 	case "config":
+		// A config frame carrying credentials means the server accepted our
+		// join key and enrolled this host. Persist what it issued -- our own
+		// per-agent token and the public key to pin -- so the next connection
+		// authenticates as this agent rather than re-enrolling, and so signed
+		// commands can be verified. This is what lets an install ship with only
+		// a join key and still end up fully configured.
+		if enrolled, _ := msg.Payload["enrolled"].(bool); enrolled {
+			token, _ := msg.Payload["auth_token"].(string)
+			pubKey, _ := msg.Payload["public_key"].(string)
+			if err := cm.PersistEnrollment(token, pubKey); err != nil {
+				log.Printf("Enrolled, but could not persist credentials: %v", err)
+				log.Printf("This agent will re-enroll on every reconnect until %s is writable.", cm.configPath)
+			} else {
+				log.Printf("Enrolled with the SSO. Credentials written to %s; the join key is no longer needed.", cm.configPath)
+			}
+			sendResponse("ok", "enrollment stored")
+			return
+		}
 		log.Printf("Received config payload: %v", msg.Payload)
 		sendResponse("ok", "Configuration received")
 	case "reboot":
