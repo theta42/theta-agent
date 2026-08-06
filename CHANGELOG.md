@@ -5,6 +5,20 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0] - 2026-08-06
+
+Join-key enrollment (protocol v1.2.0 §1.1). Installing the agent with one key is now all it takes to add a host.
+
+### Added
+- **`join_key` config field.** Presented while `auth_token` is empty. The SSO exchanges it for this agent's own token and the public key it must pin, both delivered in the `config` frame; the agent writes them into `agent.yml` and blanks the join key. No value has to be copied between two machines by hand any more.
+- `ConfigManager.PersistEnrollment` rewrites only the credential lines, line-based rather than a YAML round-trip, so operator comments, the capability matrix and formatting survive. Re-reads the file afterwards, so the new credential is live without a restart, and keeps the file at `0600`.
+- `Config.Credential()` — the agent's own token when it has one, otherwise the join key.
+- The connect URL carries `?hostname=`, so a self-enrolling host is named after itself instead of a generated placeholder.
+- `install.sh --join-key`.
+
+### Fixed
+- The agent now refuses to connect (with a clear message and a long back-off) when it has neither an `auth_token` nor a `join_key`, rather than repeatedly presenting an empty credential.
+
 ## [v1.4.0] - 2026-08-05
 
 Implements **Protocol v1.2.0**. See `PROTOCOL.md` §1.1, §5.1–5.3.
