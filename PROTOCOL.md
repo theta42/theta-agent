@@ -12,6 +12,27 @@ The agent establishes a persistent outbound WebSocket connection.
 
 ### 1.1 Enrollment (changed in v1.2.0)
 
+Two credentials can appear in `agent.yml`. The agent presents `auth_token` when
+it has one, otherwise `join_key`:
+
+| Field | Meaning |
+| :--- | :--- |
+| `auth_token` | This agent's own token, issued by the server. Long-term identity. |
+| `join_key` | Bootstrap credential (`tjk_…`), exchanged for an `auth_token` on first connect. |
+
+**Join-key flow.** The agent connects presenting a join key and
+`?hostname=<its hostname>`. The server enrolls the host and answers with a
+`config` frame carrying `enrolled: true`, `auth_token` and `public_key`. The
+agent writes both into `agent.yml`, blanks `join_key`, and uses its own token
+from then on. This is what makes "install the agent with a key" sufficient to
+add a host — no value has to be copied between two machines by hand.
+
+The public key is accepted on first connect (trust on first use) over the same
+channel that issued the token. Pre-register the host instead if you need the
+trust anchor pinned out of band.
+
+
+
 The token **must be issued by the server**. An administrator enrolls the agent in
 the SSO (Directory → Agents, or `POST /api/agent/enroll`), which mints the token,
 stores only its SHA-256, and displays the raw value once. That value goes into
@@ -28,7 +49,7 @@ authentication failure arrives as a **close frame**, not an HTTP status:
 
 | Code | Meaning | Agent behaviour |
 | :--- | :--- | :--- |
-| `4001` | Token unknown, or not issued by this server | Back off (5 min); the credential will not fix itself |
+| `4001` | Credential unknown — neither an issued token nor a valid join key | Back off (5 min); the credential will not fix itself |
 | `4002` | Superseded — another connection authenticated as this agent | Normal reconnect |
 | `4003` | Enrollment revoked or deleted by an administrator | Back off (5 min) |
 | `4004` | Token rotated — `agent.yml` holds the superseded value | Back off (5 min); re-copy the token |
@@ -96,6 +117,20 @@ Sent in response to any command received from the server.
 ---
 
 ## 4. Server $\rightarrow$ Client Messages
+
+### 4.0 `config`
+
+Sent immediately on a successful connection.
+
+- **Type**: `config`
+- **Payload**:
+  - `message`: (string) human-readable greeting.
+  - `protocol_version`: (string) the server's protocol version.
+  - `agent_id`: (string) this agent's id in the SSO.
+  - `enrolled`: (bool, optional) present and `true` only when this connection
+    just enrolled via a join key.
+  - `auth_token`: (string, optional) the issued per-agent token — **persist it**.
+  - `public_key`: (string, optional) the key to pin — **persist it**.
 
 ### 4.1 Standard Commands
 These commands are executed if the corresponding capability is enabled in `agent.yml`.

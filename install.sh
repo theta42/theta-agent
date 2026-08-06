@@ -50,6 +50,7 @@ install_sssd_deps() {
 # 2. Argument Parsing
 URL=""
 TOKEN=""
+JOIN_KEY=""
 PUBLIC_KEY=""
 B64_CONFIG=""
 INSTALL_SSSD=0
@@ -72,6 +73,13 @@ while [[ $# -gt 0 ]]; do
       PUBLIC_KEY="$2"
       shift 2
       ;;
+    # The one credential an operator hands out. The server exchanges it for a
+    # per-agent token on first connect, which the agent writes back into
+    # agent.yml -- so this is all you need to add a host.
+    --join-key)
+      JOIN_KEY="$2"
+      shift 2
+      ;;
     --install-sssd|--ldap)
       INSTALL_SSSD=1
       shift
@@ -84,14 +92,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validation
-if [ -z "$B64_CONFIG" ] && [ -z "$URL" ] || [ -z "$B64_CONFIG" ] && [ -z "$TOKEN" ]; then
-  error "Missing required configuration. Either provide a base64 encoded config, or both --url and --token."
+if [ -z "$B64_CONFIG" ] && { [ -z "$URL" ] || { [ -z "$TOKEN" ] && [ -z "$JOIN_KEY" ]; }; }; then
+  error "Missing required configuration. Provide a base64 encoded config, or --url with either --join-key or --token."
   echo "Usage examples:"
   echo "  sh install.sh \"BASE64_CONFIG\""
-  echo "  sh install.sh --url \"https://sso.local\" --token \"ISSUED_TOKEN\" --public-key \"BASE64_KEY\" --install-sssd"
+  echo "  sh install.sh --url \"https://sso.local\" --join-key \"tjk_...\" --install-sssd"
+  echo "  sh install.sh --url \"https://sso.local\" --token \"ISSUED_TOKEN\" --public-key \"BASE64_KEY\""
   echo ""
-  echo "The token must be issued by the SSO (Directory -> Install Agent enrolls"
-  echo "the host and mints it). Tokens the server did not issue are rejected."
+  echo "--join-key is the normal path: the host enrolls itself on first connect"
+  echo "and the SSO issues it its own token + public key, which the agent writes"
+  echo "back into agent.yml. Get a key from Directory -> Install Agent."
   exit 1
 fi
 
@@ -116,6 +126,7 @@ else
   cat <<EOF > "$CONFIG_FILE"
 server_url: "$URL"
 auth_token: "$TOKEN"
+join_key: "$JOIN_KEY"
 public_key: "$PUBLIC_KEY"
 location: "unknown"
 capabilities:
