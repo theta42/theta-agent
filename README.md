@@ -4,6 +4,17 @@ Theta Agent is a unified endpoint management daemon for the theta42 stack. It re
 
 The agent dials out to the central SSO Manager via a persistent WebSocket connection, enabling real-time telemetry, dynamic discovery, and secure remote operations.
 
+## What you get
+
+Install the agent on a node and it becomes a managed member of the directory — over a **single outbound connection**, with no inbound ports, no LDAP hostname/firewall/TLS setup, and no manual secret copying.
+
+- **Directory logins (LDAP byte pump).** SSSD/PAM on the node authenticates through the agent's local socket, which forwards raw LDAP bytes to the SSO's OpenLDAP. OS logins work across any network — laptops, CGNAT, cloud VMs — and fall back to the local SSSD cache when offline.
+- **Secrets delivered automatically.** Services get their config files (DB passwords, TLS keys, API tokens) rendered from OpenBao to disk, atomically, with a post-render reload. Rotate a secret and it propagates.
+- **IAM managed centrally.** Sudo rules, SSH keys, and login access are pushed from the SSO to the node. Add a user to a group and their access appears on the right hosts; revoke them and their sessions are dropped.
+- **Telemetry & remote operations.** Host discovery, live metrics, and signed remote commands (reboot, service control, config, self-update) — the original C2 capabilities.
+
+Everything is gated by a strict, local-first capability matrix and high-risk operations are Ed25519-signed (see below).
+
 ## Core Functionality
 
 ### 1. Telemetry & Observability
@@ -56,6 +67,9 @@ either drops the agent's live connection immediately. See `PROTOCOL.md` §1.1.
 |------------|------------|-------------|---------|
 | `telemetry` | Safe | Read-only metrics. | Pushes system health to SSO Manager. |
 | `configure_ldap` | Moderate | Configures SSSD. | Updates `/etc/sssd/sssd.conf` and restarts `sssd`. |
+| `ldap_tunnel` | Moderate | Local LDAP byte-pump socket. | Forwards raw LDAP bytes to the SSO for SSSD/PAM (DESIGN.md §4). |
+| `secrets` | Moderate | Renders OpenBao secrets. | Renders `/etc/theta/templates/*.tpl` to targets, atomic + reload (DESIGN.md §5). |
+| `iam` | High | Applies node IAM. | Writes sudo rules, SSH keys, access control; revokes sessions (DESIGN.md §6). |
 | `reboot` | High | System reboot. | Triggers an immediate host reboot. |
 | `service_control` | High | Service management. | Restarts services listed in the allowed list. |
 | `arbitrary_bash` | CRITICAL | Raw bash execution. | Executes any script sent by the manager as root. |

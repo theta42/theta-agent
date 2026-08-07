@@ -160,8 +160,26 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 
 		stopCh := make(chan struct{})
 
+		// All outbound writes go through the safe writer: gorilla allows only one
+		// concurrent writer, and telemetry, heartbeat, the LDAP tunnel and command
+		// responses all write to the same socket.
+		sw := &safeWriter{c: c}
+
+		// Local LDAP byte-pump tunnel (DESIGN.md §4). The agent never parses LDAP;
+		// it forwards raw bytes to the SSO and writes the responses back.
+		tunnel := newLdapTunnel(func(msg WSMessage) error {
+			return sendTunnelMessage(sw, msg)
+		})
+		if cfg.Capabilities.LdapTunnel {
+			socketPath := cfg.LdapSocket
+			if socketPath == "" {
+				socketPath = "/run/theta/ldap.sock"
+			}
+			go tunnel.start(socketPath, stopCh)
+		}
+
 		// Start telemetry and discovery with stopCh lifecycle control
-		StartTelemetryLoop(c, cm, exec, stopCh)
+		StartTelemetryLoop(sw, cm, exec, stopCh)
 
 		// Heartbeat loop
 		go func() {
@@ -174,7 +192,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				case <-ticker.C:
 					hb := WSMessage{Type: "heartbeat", Payload: map[string]interface{}{"timestamp": time.Now().Format(time.RFC3339)}}
 					payload, _ := json.Marshal(hb)
-					if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
+					if err := sw.WriteMessage(websocket.TextMessage, payload); err != nil {
 						return
 					}
 				}
@@ -208,7 +226,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				continue
 			}
 
-			handleCommand(cm, msg, c, exec)
+			handleCommand(cm, msg, sw, exec, tunnel)
 		}
 
 		// Cleanup on disconnect
@@ -226,11 +244,13 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 	}
 }
 
-func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Executor) {
+func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Executor, tunnel *ldapTunnel) {
 	cfg := cm.Get()
 	// Don't log the server's fire-and-forget heartbeat ack — it arrives every
 	// 60s and is not a command to act on; logging it is pure per-minute noise.
-	if msg.Type != "heartbeat_ack" {
+	// The LDAP tunnel is high-frequency (every chunk of a bind/search), so it is
+	// not logged either.
+	if msg.Type != "heartbeat_ack" && msg.Type != "ldap_tunnel" {
 		log.Printf("Received command: %s", msg.Type)
 	}
 
@@ -240,6 +260,12 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 	}
 
 	switch msg.Type {
+	case "ldap_tunnel":
+		// SSO→agent direction of the LDAP byte pump: write the response bytes to
+		// the matching local socket.
+		if tunnel != nil {
+			tunnel.handleMessage(msg.Payload)
+		}
 	case "reload_config":
 		if err := cm.Reload(); err != nil {
 			log.Printf("Reload failed: %v", err)
@@ -389,6 +415,46 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		sendResponse("ok", "LDAP configuration updated")
+	case "render_secrets":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.Secrets {
+			log.Println("Secrets render rejected: capability disabled in agent.yml")
+			sendResponse("error", "secrets capability disabled")
+			return
+		}
+		log.Println("Rendering secret templates...")
+		if err := renderSecrets(cfg, exec); err != nil {
+			log.Printf("Secrets render failed: %v", err)
+			sendResponse("error", fmt.Sprintf("secrets render failed: %v", err))
+			return
+		}
+		sendResponse("ok", "secrets rendered")
+	case "iam_apply":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.IAM {
+			log.Println("IAM apply rejected: capability disabled in agent.yml")
+			sendResponse("error", "iam capability disabled")
+			return
+		}
+		payload, err := parseIAMPayload(msg.Payload)
+		if err != nil {
+			log.Printf("IAM apply: bad payload: %v", err)
+			sendResponse("error", "invalid IAM payload")
+			return
+		}
+		log.Printf("Applying IAM revision %d for node %s...", payload.Revision, payload.NodeID)
+		if err := applyIAM(payload, exec); err != nil {
+			log.Printf("IAM apply failed: %v", err)
+			sendResponse("error", fmt.Sprintf("iam apply failed: %v", err))
+			return
+		}
+		sendResponse("ok", "iam applied")
 	case "arbitrary_bash":
 		if !verifySignature(cfg, msg) {
 			sendResponse("error", "signature verification failed")

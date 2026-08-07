@@ -249,7 +249,7 @@ func TestHandleCommand(t *testing.T) {
 			if tc.signed {
 				msg.Payload = sign(t, msg.Payload)
 			}
-			handleCommand(cm, msg, mockConn, mockExec)
+			handleCommand(cm, msg, mockConn, mockExec, nil)
 
 			if tc.expectedNoResponse {
 				if len(mockConn.Messages) != 0 {

@@ -16,14 +16,15 @@ import (
 )
 
 type DiscoveryData struct {
-	Hostname    string   `json:"hostname"`
-	IPs        []string `json:"ip_addresses"`
-	OS          string   `json:"os"`
-	Kernel      string   `json:"kernel"`
-	CPUModel    string   `json:"cpu"`
-	RAMTotalGB  float64  `json:"ram_total_gb"`
-	DiskTotalGB float64  `json:"disk_total_gb"`
-	Location    string   `json:"location"`
+	Hostname     string                 `json:"hostname"`
+	IPs          []string               `json:"ip_addresses"`
+	OS           string                 `json:"os"`
+	Kernel       string                 `json:"kernel"`
+	CPUModel     string                 `json:"cpu"`
+	RAMTotalGB   float64                `json:"ram_total_gb"`
+	DiskTotalGB  float64                `json:"disk_total_gb"`
+	Location     string                 `json:"location"`
+	Capabilities map[string]interface{} `json:"capabilities"`
 }
 
 type TelemetryData struct {
@@ -67,6 +68,16 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		RAMTotalGB:  float64(vm.Total) / (1024 * 1024 * 1024),
 		DiskTotalGB: float64(d.Total) / (1024 * 1024 * 1024),
 		Location:    cfg.Location,
+		Capabilities: map[string]interface{}{
+			"telemetry":       cfg.Capabilities.Telemetry,
+			"configure_ldap":  cfg.Capabilities.ConfigureLDAP,
+			"ldap_tunnel":     cfg.Capabilities.LdapTunnel,
+			"secrets":         cfg.Capabilities.Secrets,
+			"iam":             cfg.Capabilities.IAM,
+			"reboot":          cfg.Capabilities.Reboot,
+			"service_control": cfg.Capabilities.ServiceControl,
+			"arbitrary_bash":  cfg.Capabilities.ArbitraryBash,
+		},
 	}
 }
 

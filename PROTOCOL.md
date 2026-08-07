@@ -70,6 +70,24 @@ All messages are exchanged as JSON objects following the `WSMessage` structure.
 }
 ```
 
+### 2.1 `ldap_tunnel` — the LDAP byte pump (DESIGN.md §4)
+
+The agent serves a local LDAP socket for SSSD/PAM. It is a **pure byte pump**:
+the agent forwards raw LDAP bytes to the SSO, which relays them into its real
+OpenLDAP and pipes the response back. Neither side parses LDAP.
+
+- **Type**: `ldap_tunnel` (bidirectional — sent by both agent and SSO)
+- **Payload**:
+  - `conn_id`: (string) correlates one local LDAP connection.
+  - `data`: (string, optional) base64-encoded raw LDAP bytes.
+  - `close`: (bool, optional) ends the connection.
+
+The agent reads its local socket and sends `data` chunks up; the SSO relays them
+into OpenLDAP and sends OpenLDAP's response chunks back down; the agent writes
+them to the socket. `close:true` ends a connection. When the WSS is down the
+agent cannot forward bytes, so it closes local socket connections and SSSD falls
+back to its local cache.
+
 ## 3. Client $\rightarrow$ Server Messages
 
 ### 3.1 Discovery (One-time & On-Change)
@@ -153,6 +171,8 @@ These commands **require** an Ed25519 signature in the payload. The agent verifi
 | `configure_ldap` | `{ "config": "...", "signature": "..." }` | Writes `/etc/sssd/sssd.conf` and restarts `sssd`. |
 | `arbitrary_bash` | `{ "script": "...", "signature": "..." }` | Executes raw bash script. |
 | `update_binary` | `{ "url": "...", "sha256": "...", "signature": "..." }` | Downloads, verifies, and replaces the agent binary. |
+| `render_secrets` | `{ "signature": "..." }` | Renders the configured secret templates to their targets (DESIGN.md §5). |
+| `iam_apply` | `{ "node_id", "revision", "access_control", "signature" }` | Applies node IAM: sudo rules, SSH keys, access control, revocation (DESIGN.md §6). |
 
 ## 5. Cryptographic Verification Process
 
