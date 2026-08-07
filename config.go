@@ -16,6 +16,17 @@ type Capabilities struct {
 	Reboot         bool     `yaml:"reboot"`
 	ServiceControl []string `yaml:"service_control"`
 	ArbitraryBash  bool     `yaml:"arbitrary_bash"`
+	LdapTunnel     bool     `yaml:"ldap_tunnel"`
+	Secrets        bool     `yaml:"secrets"`
+	IAM            bool     `yaml:"iam"`
+}
+
+// SecretTarget maps a local template to a rendered target file and an optional
+// post-render reload command (DESIGN.md §5).
+type SecretTarget struct {
+	Template string `yaml:"template"`
+	Target   string `yaml:"target"`
+	Reload   string `yaml:"reload"`
 }
 
 type Config struct {
@@ -28,7 +39,9 @@ type Config struct {
 	JoinKey      string       `yaml:"join_key"`
 	Location     string       `yaml:"location"`
 	PublicKey    string       `yaml:"public_key"` // Ed25519 public key for signed commands
-	Capabilities Capabilities `yaml:"capabilities"`
+	LdapSocket   string        `yaml:"ldap_socket"` // local LDAP tunnel socket (DESIGN.md §4)
+	Secrets      []SecretTarget `yaml:"secrets"`    // secret templates to render (DESIGN.md §5)
+	Capabilities Capabilities  `yaml:"capabilities"`
 }
 
 // Credential returns the value to present when connecting: our own token once

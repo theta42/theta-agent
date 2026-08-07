@@ -26,16 +26,39 @@ public_key: ""
 
 location: "default" # Location identifier (e.g., site, datacenter) for naming
 
+# Local LDAP byte-pump socket (DESIGN.md §4). The agent forwards raw LDAP bytes
+# from this socket to the SSO, which relays them into its OpenLDAP. The agent
+# never parses LDAP. Point SSSD at it with:
+#   ldap_uri = ldapi://%2frun%2ftheta%2fldap.sock
+ldap_socket: "/run/theta/ldap.sock"
+
 capabilities:
   # ---------------------------------------------------------
   # Basic Capabilities (Safe, read-only or infrastructure management)
   # ---------------------------------------------------------
-  
+
   # Push CPU, RAM, GPU, and ZFS metrics to the SSO Manager
   telemetry: true
-  
+
   # Allow the SSO Manager to push down SSSD and SSH keys configuration
   configure_ldap: true
+
+  # Serve the local LDAP byte-pump socket for SSSD/PAM (DESIGN.md §4)
+  ldap_tunnel: true
+
+  # Render OpenBao secrets to local files from /etc/theta/templates (DESIGN.md §5)
+  secrets: true
+
+  # Apply node IAM (sudo rules, SSH keys, access control, revocation) (DESIGN.md §6)
+  iam: true
+
+# Secret templates to render (DESIGN.md §5). Each maps a local template to a
+# target file and an optional post-render reload. The template embeds secrets as
+# {{ bao "secret/data/nodes/<node-id>/<name>#<key>" }}.
+# secrets:
+#   - template: /etc/theta/templates/db.env.tpl
+#     target: /etc/theta/db.env
+#     reload: systemctl reload app
   
   # ---------------------------------------------------------
   # Advanced Capabilities (High risk, remote operations)
