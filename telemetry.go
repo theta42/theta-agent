@@ -55,6 +55,21 @@ type LoggedUser struct {
 	Started  int64  `json:"started"`
 }
 
+type HostDetails struct {
+	StaticHostname  string `json:"static_hostname"`
+	IconName        string `json:"icon_name"`
+	Chassis         string `json:"chassis"`
+	MachineID       string `json:"machine_id"`
+	BootID          string `json:"boot_id"`
+	OS              string `json:"os"`
+	Kernel          string `json:"kernel"`
+	Arch            string `json:"arch"`
+	HardwareVendor  string `json:"hardware_vendor"`
+	HardwareModel   string `json:"hardware_model"`
+	FirmwareVersion string `json:"firmware_version"`
+	FirmwareDate    string `json:"firmware_date"`
+}
+
 type DiscoveryData struct {
 	Hostname     string                 `json:"hostname"`
 	IPs          []string               `json:"ip_addresses"`
@@ -68,6 +83,7 @@ type DiscoveryData struct {
 	DiskTotalGB  float64                `json:"disk_total_gb"`
 	Disks        []DiskItem             `json:"disks"`
 	LoggedUsers  []LoggedUser           `json:"logged_users"`
+	HostDetails  HostDetails            `json:"host_details"`
 	Version      string                 `json:"version"`
 	Location     string                 `json:"location"`
 	Capabilities map[string]interface{} `json:"capabilities"`
@@ -81,6 +97,7 @@ type TelemetryData struct {
 	DiskUsagePercent float64      `json:"disk_usage_percent"`
 	Disks            []DiskItem   `json:"disks"`
 	LoggedUsers      []LoggedUser `json:"logged_users"`
+	HostDetails      HostDetails  `json:"host_details"`
 	Version          string       `json:"version"`
 	ZFSHealth        string       `json:"zfs_health,omitempty"`
 	GPUUsage         float64      `json:"gpu_usage_percent,omitempty"`
@@ -117,6 +134,19 @@ func collectCPUDetails() CPUDetails {
 	mhz := 0.0
 	if len(cpuInfo) > 0 {
 		model = cpuInfo[0].ModelName
+		if model == "" || strings.TrimSpace(model) == "154" || len(model) < 4 {
+			if data, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+				for _, line := range strings.Split(string(data), "\n") {
+					if strings.HasPrefix(line, "model name") {
+						parts := strings.Split(line, ":")
+						if len(parts) > 1 {
+							model = strings.TrimSpace(parts[1])
+							break
+						}
+					}
+				}
+			}
+		}
 		if model == "" {
 			model = cpuInfo[0].Model
 		}
@@ -189,23 +219,51 @@ func getDriveType(device string) string {
 
 func collectLoggedUsers() []LoggedUser {
 	var list []LoggedUser
-	users, err := host.Users()
-	if err != nil || len(users) == 0 {
-		return list
-	}
 	seen := make(map[string]bool)
-	for _, u := range users {
-		key := fmt.Sprintf("%s@%s:%s", u.User, u.Terminal, u.Host)
-		if seen[key] {
-			continue
+	users, err := host.Users()
+	if err == nil {
+		for _, u := range users {
+			key := fmt.Sprintf("%s@%s:%s", u.User, u.Terminal, u.Host)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			list = append(list, LoggedUser{
+				User:     u.User,
+				Terminal: u.Terminal,
+				Host:     u.Host,
+				Started:  int64(u.Started),
+			})
 		}
-		seen[key] = true
-		list = append(list, LoggedUser{
-			User:     u.User,
-			Terminal: u.Terminal,
-			Host:     u.Host,
-			Started:  int64(u.Started),
-		})
+	}
+
+	if len(list) == 0 {
+		exec := SystemExecutor{}
+		out, err := exec.Execute("who")
+		if err == nil && len(out) > 0 {
+			lines := strings.Split(string(out), "\n")
+			for _, line := range lines {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					user := fields[0]
+					term := fields[1]
+					hostStr := ""
+					if len(fields) >= 5 {
+						hostStr = strings.Trim(fields[4], "()")
+					}
+					key := fmt.Sprintf("%s@%s:%s", user, term, hostStr)
+					if !seen[key] {
+						seen[key] = true
+						list = append(list, LoggedUser{
+							User:     user,
+							Terminal: term,
+							Host:     hostStr,
+							Started:  time.Now().Unix(),
+						})
+					}
+				}
+			}
+		}
 	}
 	return list
 }
@@ -218,6 +276,7 @@ func collectDiskItems() []DiskItem {
 		if err2 == nil {
 			items = append(items, DiskItem{
 				Mountpoint:   "/",
+				Device:       d.Path,
 				FSType:       d.Fstype,
 				DriveType:    getDriveType(d.Path),
 				TotalBytes:   d.Total,
@@ -229,17 +288,9 @@ func collectDiskItems() []DiskItem {
 		return items
 	}
 	seen := make(map[string]bool)
-	ignoredFSTypes := map[string]bool{
-		"tmpfs": true, "devtmpfs": true, "proc": true, "sysfs": true,
-		"cgroup": true, "cgroup2": true, "overlay": true, "squashfs": true,
-		"autofs": true, "devpts": true, "mqueue": true,
-	}
 
 	for _, p := range partitions {
-		if strings.HasPrefix(p.Mountpoint, "/proc") || strings.HasPrefix(p.Mountpoint, "/sys") || strings.HasPrefix(p.Mountpoint, "/dev") {
-			continue
-		}
-		if ignoredFSTypes[strings.ToLower(p.Fstype)] {
+		if !strings.HasPrefix(p.Device, "/dev/") || strings.HasPrefix(p.Device, "/dev/loop") {
 			continue
 		}
 		if seen[p.Mountpoint] {
@@ -270,6 +321,7 @@ func collectDiskItems() []DiskItem {
 		if err2 == nil {
 			items = append(items, DiskItem{
 				Mountpoint:   "/",
+				Device:       d.Path,
 				FSType:       d.Fstype,
 				DriveType:    getDriveType(d.Path),
 				TotalBytes:   d.Total,
@@ -280,6 +332,68 @@ func collectDiskItems() []DiskItem {
 		}
 	}
 	return items
+}
+
+func collectHostDetails() HostDetails {
+	details := HostDetails{}
+	exec := SystemExecutor{}
+	out, err := exec.Execute("hostnamectl")
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				switch key {
+				case "Static hostname":
+					details.StaticHostname = val
+				case "Icon name":
+					details.IconName = val
+				case "Chassis":
+					details.Chassis = val
+				case "Machine ID":
+					details.MachineID = val
+				case "Boot ID":
+					details.BootID = val
+				case "Operating System":
+					details.OS = val
+				case "Kernel":
+					details.Kernel = val
+				case "Architecture":
+					details.Arch = val
+				case "Hardware Vendor":
+					details.HardwareVendor = val
+				case "Hardware Model":
+					details.HardwareModel = val
+				case "Firmware Version":
+					details.FirmwareVersion = val
+				case "Firmware Date":
+					details.FirmwareDate = val
+				}
+			}
+		}
+	}
+	if details.HardwareVendor == "" {
+		if d, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
+			details.HardwareVendor = strings.TrimSpace(string(d))
+		}
+	}
+	if details.HardwareModel == "" {
+		if d, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
+			details.HardwareModel = strings.TrimSpace(string(d))
+		}
+	}
+	if details.FirmwareVersion == "" {
+		if d, err := os.ReadFile("/sys/class/dmi/id/bios_version"); err == nil {
+			details.FirmwareVersion = strings.TrimSpace(string(d))
+		}
+	}
+	if details.FirmwareDate == "" {
+		if d, err := os.ReadFile("/sys/class/dmi/id/bios_date"); err == nil {
+			details.FirmwareDate = strings.TrimSpace(string(d))
+		}
+	}
+	return details
 }
 
 const AgentVersion = "v1.7.0"
@@ -316,6 +430,8 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		diskTotalGB = float64(disks[0].TotalBytes) / (1024 * 1024 * 1024)
 	}
 
+	hostDet := collectHostDetails()
+
 	return DiscoveryData{
 		Hostname:     h.Hostname,
 		IPs:          ips,
@@ -329,19 +445,20 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		DiskTotalGB:  diskTotalGB,
 		Disks:        disks,
 		LoggedUsers:  loggedUsers,
+		HostDetails:  hostDet,
 		Version:      AgentVersion,
 		Location:     cfg.Location,
 		Capabilities: map[string]interface{}{
-			"telemetry":       cfg.Capabilities.Telemetry,
-			"configure_ldap":  cfg.Capabilities.ConfigureLDAP,
-			"ldap_tunnel":     cfg.Capabilities.LdapTunnel,
-			"secrets":         cfg.Capabilities.Secrets,
-			"iam":             cfg.Capabilities.IAM,
-			"reboot":          cfg.Capabilities.Reboot,
-			"shutdown":        true,
+			"telemetry":        cfg.Capabilities.Telemetry,
+			"configure_ldap":   cfg.Capabilities.ConfigureLDAP,
+			"ldap_tunnel":      cfg.Capabilities.LdapTunnel,
+			"secrets":          cfg.Capabilities.Secrets,
+			"iam":              cfg.Capabilities.IAM,
+			"reboot":           cfg.Capabilities.Reboot,
+			"shutdown":         true,
 			"desktop_controls": true,
-			"service_control": cfg.Capabilities.ServiceControl,
-			"arbitrary_bash":  cfg.Capabilities.ArbitraryBash,
+			"service_control":  cfg.Capabilities.ServiceControl,
+			"arbitrary_bash":   cfg.Capabilities.ArbitraryBash,
 		},
 	}
 }
@@ -353,6 +470,7 @@ func CollectTelemetryData(exec Executor) TelemetryData {
 	disks := collectDiskItems()
 	cpuDet := collectCPUDetails()
 	loggedUsers := collectLoggedUsers()
+	hostDet := collectHostDetails()
 
 	cpuVal := 0.0
 	if len(cpuPerc) > 0 {
@@ -378,6 +496,7 @@ func CollectTelemetryData(exec Executor) TelemetryData {
 		DiskUsagePercent: diskVal,
 		Disks:            disks,
 		LoggedUsers:      loggedUsers,
+		HostDetails:      hostDet,
 		Version:          AgentVersion,
 		ZFSHealth:        collectZFSHealth(exec),
 		GPUUsage:         collectGPUUsage(exec),

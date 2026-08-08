@@ -402,16 +402,22 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		case "lock_session", "lock":
 			out, err = exec.Execute("loginctl", "lock-sessions")
 			if err != nil {
-				out, err = exec.Execute("xset", "dpms", "force", "off")
+				out, err = exec.Execute("sh", "-c", "DISPLAY=:0 xdg-screensaver lock || DISPLAY=:0 xset dpms force off")
 			}
 		case "logout_user", "logout":
 			if targetUser != "" {
-				out, err = exec.Execute("pkill", "-KILL", "-u", targetUser)
+				out, err = exec.Execute("loginctl", "terminate-user", targetUser)
+				if err != nil {
+					out, err = exec.Execute("pkill", "-KILL", "-u", targetUser)
+				}
 			} else {
 				out, err = exec.Execute("loginctl", "terminate-session")
+				if err != nil {
+					out, err = exec.Execute("pkill", "-9", "-f", "session-child")
+				}
 			}
 		case "display_off":
-			out, err = exec.Execute("xset", "dpms", "force", "off")
+			out, err = exec.Execute("sh", "-c", "DISPLAY=:0 xset dpms force off || loginctl lock-sessions")
 		case "sleep_host", "sleep":
 			out, err = exec.Execute("systemctl", "suspend")
 		default:
