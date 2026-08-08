@@ -5,15 +5,20 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
 func main() {
+	if len(os.Args) > 1 && handleCLI(os.Args[1:]) {
+		return
+	}
+
 	log.Println("Starting Theta Agent...")
 
 	// Attempt to load configuration
 	configPath := "/etc/theta42/agent.yml"
-	if len(os.Args) > 1 {
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
 		configPath = os.Args[1]
 	}
 

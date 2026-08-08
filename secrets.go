@@ -144,10 +144,20 @@ func fetchSecrets(cfg *Config, paths []string) (map[string]map[string]interface{
 
 // refPath returns the secret path from a `path#key` reference.
 func refPath(ref string) string {
+	path := ref
 	if i := strings.Index(ref, "#"); i >= 0 {
-		return ref[:i]
+		path = ref[:i]
 	}
-	return ref
+	if strings.HasPrefix(path, "resource/") {
+		return "secret/data/resources/" + strings.TrimPrefix(path, "resource/") + "/conf"
+	}
+	if strings.HasPrefix(path, "resources/") {
+		return "secret/data/resources/" + strings.TrimPrefix(path, "resources/") + "/conf"
+	}
+	if !strings.HasPrefix(path, "secret/") {
+		return "secret/data/resources/" + path + "/conf"
+	}
+	return path
 }
 
 // refKey returns the key from a `path#key` reference.

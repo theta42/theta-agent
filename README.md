@@ -9,7 +9,7 @@ The agent dials out to the central SSO Manager via a persistent WebSocket connec
 Install the agent on a node and it becomes a managed member of the directory — over a **single outbound connection**, with no inbound ports, no LDAP hostname/firewall/TLS setup, and no manual secret copying.
 
 - **Directory logins (LDAP byte pump).** SSSD/PAM on the node authenticates through the agent's local socket, which forwards raw LDAP bytes to the SSO's OpenLDAP. OS logins work across any network — laptops, CGNAT, cloud VMs — and fall back to the local SSSD cache when offline.
-- **Secrets delivered automatically.** Services get their config files (DB passwords, TLS keys, API tokens) rendered from OpenBao to disk, atomically, with a post-render reload. Rotate a secret and it propagates.
+- **Secrets delivered on-demand.** Services, scripts, and Docker containers fetch secrets dynamically via `theta-agent get-secret DB_PASSWORD` or `theta-agent get-secrets --env`. Zero plaintext secrets on disk! Multi-level secret inheritance (Global Site -> Host -> Service) is resolved automatically.
 - **IAM managed centrally.** Sudo rules, SSH keys, and login access are pushed from the SSO to the node. Add a user to a group and their access appears on the right hosts; revoke them and their sessions are dropped.
 - **Telemetry & remote operations.** Host discovery, live metrics, and signed remote commands (reboot, service control, config, self-update) — the original C2 capabilities.
 

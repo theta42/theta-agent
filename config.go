@@ -159,6 +159,10 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to decode YAML config: %w", err)
 	}
 
+	if cfg.Capabilities.ConfigureLDAP {
+		cfg.Capabilities.LdapTunnel = true
+	}
+
 	return &cfg, nil
 }
 

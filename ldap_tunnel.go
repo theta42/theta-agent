@@ -37,32 +37,43 @@ func newLdapTunnel(send func(WSMessage) error) *ldapTunnel {
 	}
 }
 
-// start binds the unix socket and accepts connections until stopCh closes.
+// start binds both unix socket and TCP loopback, accepting connections until stopCh closes.
 func (t *ldapTunnel) start(socketPath string, stopCh <-chan struct{}) {
-	// Remove a stale socket left over from a previous run, and make sure the
-	// parent directory exists (e.g. /run/theta on a fresh boot).
 	os.Remove(socketPath)
 	if dir := filepath.Dir(socketPath); dir != "." && dir != "/" {
 		os.MkdirAll(dir, 0755)
 	}
 
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		log.Printf("LDAP tunnel: cannot bind %s: %v", socketPath, err)
-		return
+	// 1. UNIX Domain Socket Listener
+	lnUnix, err := net.Listen("unix", socketPath)
+	if err == nil {
+		os.Chmod(socketPath, 0666)
+		log.Printf("LDAP tunnel: listening on unix socket %s", socketPath)
+		go t.acceptLoop(lnUnix, stopCh)
+	} else {
+		log.Printf("LDAP tunnel: cannot bind unix socket %s: %v", socketPath, err)
 	}
-	// root:theta, 0660 — only root and the theta group can connect. A unix
-	// socket is preferred over 127.0.0.1:389 because filesystem permissions
-	// restrict which local processes can reach it.
-	os.Chmod(socketPath, 0660)
-	defer ln.Close()
-	log.Printf("LDAP tunnel: listening on %s", socketPath)
 
+	// 2. TCP Loopback Listener (127.0.0.1:389 with fallback to 127.0.0.1:3890)
+	lnTcp, errTcp := net.Listen("tcp", "127.0.0.1:389")
+	if errTcp != nil {
+		lnTcp, errTcp = net.Listen("tcp", "127.0.0.1:3890")
+	}
+
+	if errTcp == nil {
+		log.Printf("LDAP tunnel: listening on tcp %s", lnTcp.Addr().String())
+		go t.acceptLoop(lnTcp, stopCh)
+	} else {
+		log.Printf("LDAP tunnel: cannot bind tcp loopback: %v", errTcp)
+	}
+}
+
+func (t *ldapTunnel) acceptLoop(ln net.Listener, stopCh <-chan struct{}) {
+	defer ln.Close()
 	go func() {
 		<-stopCh
 		ln.Close()
 	}()
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
