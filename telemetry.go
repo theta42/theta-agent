@@ -48,6 +48,13 @@ type DiskItem struct {
 	UsagePercent float64 `json:"usage_percent"`
 }
 
+type LoggedUser struct {
+	User     string `json:"user"`
+	Terminal string `json:"terminal"`
+	Host     string `json:"host"`
+	Started  int64  `json:"started"`
+}
+
 type DiscoveryData struct {
 	Hostname     string                 `json:"hostname"`
 	IPs          []string               `json:"ip_addresses"`
@@ -60,20 +67,24 @@ type DiscoveryData struct {
 	RAMDetails   RAMDetails             `json:"ram_details"`
 	DiskTotalGB  float64                `json:"disk_total_gb"`
 	Disks        []DiskItem             `json:"disks"`
+	LoggedUsers  []LoggedUser           `json:"logged_users"`
+	Version      string                 `json:"version"`
 	Location     string                 `json:"location"`
 	Capabilities map[string]interface{} `json:"capabilities"`
 }
 
 type TelemetryData struct {
-	CPUUsagePercent  float64    `json:"cpu_usage_percent"`
-	CPUDetails       CPUDetails `json:"cpu_details"`
-	RAMUsagePercent  float64    `json:"ram_usage_percent"`
-	RAMDetails       RAMDetails `json:"ram_details"`
-	DiskUsagePercent float64    `json:"disk_usage_percent"`
-	Disks            []DiskItem `json:"disks"`
-	ZFSHealth        string     `json:"zfs_health,omitempty"`
-	GPUUsage         float64    `json:"gpu_usage_percent,omitempty"`
-	Timestamp        string     `json:"timestamp"`
+	CPUUsagePercent  float64      `json:"cpu_usage_percent"`
+	CPUDetails       CPUDetails   `json:"cpu_details"`
+	RAMUsagePercent  float64      `json:"ram_usage_percent"`
+	RAMDetails       RAMDetails   `json:"ram_details"`
+	DiskUsagePercent float64      `json:"disk_usage_percent"`
+	Disks            []DiskItem   `json:"disks"`
+	LoggedUsers      []LoggedUser `json:"logged_users"`
+	Version          string       `json:"version"`
+	ZFSHealth        string       `json:"zfs_health,omitempty"`
+	GPUUsage         float64      `json:"gpu_usage_percent,omitempty"`
+	Timestamp        string       `json:"timestamp"`
 }
 
 func getPublicIP() string {
@@ -176,9 +187,32 @@ func getDriveType(device string) string {
 	return "SSD/HDD"
 }
 
+func collectLoggedUsers() []LoggedUser {
+	var list []LoggedUser
+	users, err := host.Users()
+	if err != nil || len(users) == 0 {
+		return list
+	}
+	seen := make(map[string]bool)
+	for _, u := range users {
+		key := fmt.Sprintf("%s@%s:%s", u.User, u.Terminal, u.Host)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		list = append(list, LoggedUser{
+			User:     u.User,
+			Terminal: u.Terminal,
+			Host:     u.Host,
+			Started:  int64(u.Started),
+		})
+	}
+	return list
+}
+
 func collectDiskItems() []DiskItem {
 	var items []DiskItem
-	partitions, err := disk.Partitions(false)
+	partitions, err := disk.Partitions(true)
 	if err != nil || len(partitions) == 0 {
 		d, err2 := disk.Usage("/")
 		if err2 == nil {
@@ -195,8 +229,17 @@ func collectDiskItems() []DiskItem {
 		return items
 	}
 	seen := make(map[string]bool)
+	ignoredFSTypes := map[string]bool{
+		"tmpfs": true, "devtmpfs": true, "proc": true, "sysfs": true,
+		"cgroup": true, "cgroup2": true, "overlay": true, "squashfs": true,
+		"autofs": true, "devpts": true, "mqueue": true,
+	}
+
 	for _, p := range partitions {
 		if strings.HasPrefix(p.Mountpoint, "/proc") || strings.HasPrefix(p.Mountpoint, "/sys") || strings.HasPrefix(p.Mountpoint, "/dev") {
+			continue
+		}
+		if ignoredFSTypes[strings.ToLower(p.Fstype)] {
 			continue
 		}
 		if seen[p.Mountpoint] {
@@ -239,6 +282,8 @@ func collectDiskItems() []DiskItem {
 	return items
 }
 
+const AgentVersion = "v1.7.0"
+
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
 	h, _ := host.Info()
@@ -256,6 +301,7 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 	vm := collectRAMDetails()
 	disks := collectDiskItems()
 	cpuDet := collectCPUDetails()
+	loggedUsers := collectLoggedUsers()
 
 	pubIP := getPublicIP()
 
@@ -282,6 +328,8 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		RAMDetails:   vm,
 		DiskTotalGB:  diskTotalGB,
 		Disks:        disks,
+		LoggedUsers:  loggedUsers,
+		Version:      AgentVersion,
 		Location:     cfg.Location,
 		Capabilities: map[string]interface{}{
 			"telemetry":       cfg.Capabilities.Telemetry,
@@ -291,6 +339,7 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 			"iam":             cfg.Capabilities.IAM,
 			"reboot":          cfg.Capabilities.Reboot,
 			"shutdown":        true,
+			"desktop_controls": true,
 			"service_control": cfg.Capabilities.ServiceControl,
 			"arbitrary_bash":  cfg.Capabilities.ArbitraryBash,
 		},
@@ -303,6 +352,7 @@ func CollectTelemetryData(exec Executor) TelemetryData {
 	vm := collectRAMDetails()
 	disks := collectDiskItems()
 	cpuDet := collectCPUDetails()
+	loggedUsers := collectLoggedUsers()
 
 	cpuVal := 0.0
 	if len(cpuPerc) > 0 {
@@ -327,6 +377,8 @@ func CollectTelemetryData(exec Executor) TelemetryData {
 		RAMDetails:       vm,
 		DiskUsagePercent: diskVal,
 		Disks:            disks,
+		LoggedUsers:      loggedUsers,
+		Version:          AgentVersion,
 		ZFSHealth:        collectZFSHealth(exec),
 		GPUUsage:         collectGPUUsage(exec),
 		Timestamp:        time.Now().Format(time.RFC3339),

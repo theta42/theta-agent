@@ -5,6 +5,14 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.0] - 2026-08-08
+
+### Added
+- **Active Logged-in User Sessions.** Added `collectLoggedUsers()` gathering terminal sessions (`who` / `host.Users()`) reported in discovery and live telemetry payloads.
+- **Full Physical Partition & Filesystem Collection.** Switched to `disk.Partitions(true)` to list all physical drives, ZFS pools, and mount points while filtering pseudo/virtual filesystems.
+- **Desktop Control Operations.** Implemented `desktop_control` WebSocket actions supporting `lock_session` (`loginctl lock-sessions`), `logout_user` (`pkill -u <user>`), `display_off` (`xset dpms force off`), and `sleep_host` (`systemctl suspend`).
+- **Binary Version Reporting.** Included `AgentVersion` (`v1.8.0`) in discovery and telemetry frames.
+
 ## [v1.7.0] - 2026-08-08
 
 ### Added
