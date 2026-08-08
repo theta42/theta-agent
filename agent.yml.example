@@ -2,19 +2,63 @@
 # Default location: /etc/theta42/agent.yml
 
 server_url: "https://sso.example.com"
-auth_token: "REPLACE_WITH_AGENT_TOKEN"
+
+# This agent's own token. Leave EMPTY when installing with a join key -- the
+# agent fills it in itself once the SSO enrolls it. The server records only a
+# hash and rejects any token it did not issue, so a locally invented value will
+# never connect.
+auth_token: ""
+
+# The one credential you need to add a host. Used only while auth_token is
+# empty: the SSO exchanges it for this agent's own token + public key on first
+# connect, and the agent then blanks this line. Get one from the SSO
+# (Directory -> Install Agent, or POST /api/agent/join-keys).
+join_key: ""
+
+# Base64 of the SSO's RAW 32-byte Ed25519 public key (NOT a PEM body). Filled in
+# automatically when enrolling with a join key; set it by hand only if you
+# pre-registered this host.
+#
+# Required for any high-risk command. Without it the agent still reports
+# telemetry, but REFUSES reboot / service_restart / configure_ldap /
+# arbitrary_bash / update_binary, because it has no way to verify them.
+public_key: ""
+
 location: "default" # Location identifier (e.g., site, datacenter) for naming
+
+# Local LDAP byte-pump socket (DESIGN.md §4). The agent forwards raw LDAP bytes
+# from this socket to the SSO, which relays them into its OpenLDAP. The agent
+# never parses LDAP. Point SSSD at it with:
+#   ldap_uri = ldapi://%2frun%2ftheta%2fldap.sock
+ldap_socket: "/run/theta/ldap.sock"
 
 capabilities:
   # ---------------------------------------------------------
   # Basic Capabilities (Safe, read-only or infrastructure management)
   # ---------------------------------------------------------
-  
+
   # Push CPU, RAM, GPU, and ZFS metrics to the SSO Manager
   telemetry: true
-  
+
   # Allow the SSO Manager to push down SSSD and SSH keys configuration
   configure_ldap: true
+
+  # Serve the local LDAP byte-pump socket for SSSD/PAM (DESIGN.md §4)
+  ldap_tunnel: true
+
+  # Render OpenBao secrets to local files from /etc/theta/templates (DESIGN.md §5)
+  secrets: true
+
+  # Apply node IAM (sudo rules, SSH keys, access control, revocation) (DESIGN.md §6)
+  iam: true
+
+# Secret templates to render (DESIGN.md §5). Each maps a local template to a
+# target file and an optional post-render reload. The template embeds secrets as
+# {{ bao "secret/data/nodes/<node-id>/<name>#<key>" }}.
+# secrets:
+#   - template: /etc/theta/templates/db.env.tpl
+#     target: /etc/theta/db.env
+#     reload: systemctl reload app
   
   # ---------------------------------------------------------
   # Advanced Capabilities (High risk, remote operations)
