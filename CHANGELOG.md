@@ -5,6 +5,17 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.0] - 2026-08-07
+
+### Added
+- **On-demand CLI Secret Fetching (`theta-agent get-secret <key>`).** Fetch raw secret values directly over TLS without writing plaintext files to disk. Supports `theta-agent get-secrets --env` (formatted for Systemd `EnvironmentFile`) and `theta-agent get-secrets --json`.
+- **CLI Self-Update and Re-enrollment Commands.** Added `theta-agent update` and `theta-agent reinitialize [--join-key <key>]` CLI options with automated service restarts (`sssd`, `sshd`).
+- **Zero-Trust LDAP WebSocket Tunnel (`ldap_tunnel`).** Auto-starts local `/run/theta/ldap.sock` and `127.0.0.1:3890` loopback listeners.
+- **Dynamic Site Matching.** Auto-detects WAN IP for public site matching and discovery.
+
+### Fixed
+- **SSSD Socket Activation Exit Code 17.** Removed legacy `services` key in generated `sssd.conf` to satisfy modern systemd socket activation requirements.
+
 ## [Unreleased] - LDAP byte-pump tunnel (DESIGN.md §4)
 
 The agent now serves a local LDAP socket for SSSD/PAM. It is a **pure byte

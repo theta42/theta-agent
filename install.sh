@@ -19,7 +19,7 @@ log() { echo -e "${GREEN}[+]${NC} $1"; }
 error() { echo -e "${RED}[!]${NC} $1"; exit 1; }
 
 # 1. Root check
-if [ "$EUID" -ne 0 ]; then
+if [ "$(id -u 2>/dev/null || echo 1)" -ne 0 ]; then
   error "This script must be run as root."
 fi
 
@@ -29,9 +29,10 @@ install_sssd_deps() {
     log "Installing SSSD and PAM integration dependencies..."
     if command -v apt-get >/dev/null 2>&1; then
       DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sssd sssd-ldap libnss-sss libpam-sss libsss-sudo pam-auth-update || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sssd sssd-ldap libnss-sss libpam-sss libsss-sudo libpam-runtime || \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sssd sssd-ldap libnss-sss libpam-sss || true
       if command -v pam-auth-update >/dev/null 2>&1; then
-        pam-auth-update --enable mkhomedir || true
+        pam-auth-update --package --enable mkhomedir sss || pam-auth-update --enable mkhomedir || true
       fi
     elif command -v dnf >/dev/null 2>&1; then
       dnf install -y sssd sssd-ldap sssd-tools || true
@@ -45,6 +46,8 @@ install_sssd_deps() {
   else
     log "SSSD is already installed."
   fi
+  mkdir -p /etc/sssd
+  chmod 755 /etc/sssd
 }
 
 # 2. Argument Parsing
@@ -55,7 +58,7 @@ PUBLIC_KEY=""
 B64_CONFIG=""
 INSTALL_SSSD=0
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
   case $1 in
     --url)
       URL="$2"
@@ -91,8 +94,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Validation
-if [ -z "$B64_CONFIG" ] && { [ -z "$URL" ] || { [ -z "$TOKEN" ] && [ -z "$JOIN_KEY" ]; }; }; then
+# Validation: require credentials ONLY if config file does not already exist
+if [ ! -f "$CONFIG_FILE" ] && [ -z "$B64_CONFIG" ] && { [ -z "$URL" ] || { [ -z "$TOKEN" ] && [ -z "$JOIN_KEY" ]; }; }; then
   error "Missing required configuration. Provide a base64 encoded config, or --url with either --join-key or --token."
   echo "Usage examples:"
   echo "  sh install.sh \"BASE64_CONFIG\""
@@ -109,8 +112,9 @@ log "Starting Theta Agent installation..."
 
 # 3. Install binary
 log "Downloading binary from $BINARY_URL..."
-curl -fsSL "$BINARY_URL" -o "$BIN_PATH" || error "Failed to download binary."
-chmod +x "$BIN_PATH"
+curl -fsSL "$BINARY_URL" -o "$BIN_PATH.tmp" || error "Failed to download binary."
+chmod +x "$BIN_PATH.tmp"
+mv -f "$BIN_PATH.tmp" "$BIN_PATH"
 
 # 4. Setup configuration
 log "Preparing configuration directory $CONFIG_DIR..."
@@ -120,9 +124,8 @@ chmod 755 "$CONFIG_DIR"
 if [ -n "$B64_CONFIG" ]; then
   log "Decoding and writing configuration from base64..."
   echo "$B64_CONFIG" | base64 -d > "$CONFIG_FILE" || error "Failed to decode base64 configuration."
-else
+elif [ ! -f "$CONFIG_FILE" ]; then
   log "Generating minimal configuration from arguments..."
-  # Create a minimal yaml with the provided URL and Token
   cat <<EOF > "$CONFIG_FILE"
 server_url: "$URL"
 auth_token: "$TOKEN"
@@ -131,11 +134,14 @@ public_key: "$PUBLIC_KEY"
 location: "unknown"
 capabilities:
   telemetry: true
-  configure_ldap: false
+  configure_ldap: true
+  ldap_tunnel: true
   reboot: false
   service_control: []
   arbitrary_bash: false
 EOF
+else
+  log "Preserving existing configuration at $CONFIG_FILE"
 fi
 chmod 600 "$CONFIG_FILE"
 
@@ -149,7 +155,7 @@ if ! grep -qE '^public_key:[[:space:]]*"[^"]+"' "$CONFIG_FILE" 2>/dev/null; then
 fi
 
 # 4b. Ensure SSSD dependencies are installed if configure_ldap is enabled
-if [ "$INSTALL_SSSD" -eq 1 ] || grep -q -i "configure_ldap:\s*true" "$CONFIG_FILE" 2>/dev/null; then
+if [ "$INSTALL_SSSD" -eq 1 ] || grep -qE -i 'configure_ldap:[[:space:]]*true' "$CONFIG_FILE" 2>/dev/null; then
   install_sssd_deps
 fi
 
@@ -165,8 +171,6 @@ Type=simple
 ExecStart=$BIN_PATH
 Restart=always
 RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
 SyslogIdentifier=theta-agent
 
 [Install]

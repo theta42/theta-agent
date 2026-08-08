@@ -170,7 +170,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		tunnel := newLdapTunnel(func(msg WSMessage) error {
 			return sendTunnelMessage(sw, msg)
 		})
-		if cfg.Capabilities.LdapTunnel {
+		if cfg.Capabilities.LdapTunnel || cfg.Capabilities.ConfigureLDAP {
 			socketPath := cfg.LdapSocket
 			if socketPath == "" {
 				socketPath = "/run/theta/ldap.sock"
@@ -289,6 +289,9 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		linesCount := 100
 		if l, ok := msg.Payload["lines"].(float64); ok && l > 0 {
 			linesCount = int(l)
+			if linesCount > 2000 {
+				linesCount = 2000
+			}
 		}
 
 		log.Printf("Fetching logs for service %s (%d lines)...", serviceName, linesCount)
@@ -402,18 +405,69 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 
 		log.Println("Pushing updated SSSD configuration...")
+		_ = os.MkdirAll("/etc/sssd", 0755)
 		if err := exec.WriteFile("/etc/sssd/sssd.conf", []byte(configData), 0600); err != nil {
 			log.Printf("Failed to write SSSD config: %v", err)
 			sendResponse("error", "failed to write config")
 			return
 		}
 
+		// Ensure /etc/nsswitch.conf enables sss for passwd, group, shadow, sudoers
+		if nssBytes, err := os.ReadFile("/etc/nsswitch.conf"); err == nil {
+			nssContent := string(nssBytes)
+			updatedNss := false
+			lines := strings.Split(nssContent, "\n")
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if (strings.HasPrefix(trimmed, "passwd:") || strings.HasPrefix(trimmed, "group:") || strings.HasPrefix(trimmed, "shadow:") || strings.HasPrefix(trimmed, "sudoers:")) && !strings.Contains(trimmed, "sss") {
+					lines[i] = line + " sss"
+					updatedNss = true
+				}
+			}
+			if updatedNss {
+				_ = os.WriteFile("/etc/nsswitch.conf", []byte(strings.Join(lines, "\n")), 0644)
+			}
+		}
+
 		log.Println("Restarting SSSD service...")
 		if _, err := exec.Execute("systemctl", "restart", "sssd"); err != nil {
-			log.Printf("SSSD restart failed: %v", err)
+			log.Printf("SSSD restart failed (%v), attempting auto-install of missing packages...", err)
+			if _, err2 := exec.Execute("sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get update -y -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sssd sssd-ldap libnss-sss libpam-sss libsss-sudo libpam-runtime || dnf install -y sssd sssd-ldap sssd-tools || yum install -y sssd sssd-ldap sssd-tools"); err2 == nil {
+				_, _ = exec.Execute("sh", "-c", "pam-auth-update --package --enable mkhomedir sss || true")
+				if _, err3 := exec.Execute("systemctl", "restart", "sssd"); err3 == nil {
+					// Configure SSH AuthorizedKeysCommand
+					_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
+					sshConfPath := "/etc/ssh/sshd_config.d/theta-sssd.conf"
+					sshConfContent := "AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys %u\nAuthorizedKeysCommandUser nobody\n"
+					_ = os.WriteFile(sshConfPath, []byte(sshConfContent), 0644)
+					_, _ = exec.Execute("systemctl", "reload", "sshd")
+					sendResponse("ok", "LDAP configuration updated")
+					return
+				}
+			}
 			sendResponse("error", "failed to restart sssd")
 			return
 		}
+
+		// Ensure /etc/ssh/sshd_config.d/theta-sssd.conf is created for SSH AuthorizedKeysCommand
+		_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
+		sshConfPath := "/etc/ssh/sshd_config.d/theta-sssd.conf"
+		sshConfContent := "AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys %u\nAuthorizedKeysCommandUser nobody\n"
+		if err := os.WriteFile(sshConfPath, []byte(sshConfContent), 0644); err == nil {
+			_, _ = exec.Execute("systemctl", "reload", "sshd")
+		}
+		if sshdBytes, err2 := os.ReadFile("/etc/ssh/sshd_config"); err2 == nil {
+			sshdStr := string(sshdBytes)
+			if !strings.Contains(sshdStr, "sss_ssh_authorizedkeys") {
+				sshdStr += "\nAuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys %u\nAuthorizedKeysCommandUser nobody\n"
+				_ = os.WriteFile("/etc/ssh/sshd_config", []byte(sshdStr), 0644)
+				_, _ = exec.Execute("systemctl", "reload", "sshd")
+			}
+		}
+
+		// Ensure PAM mkhomedir is enabled
+		_, _ = exec.Execute("sh", "-c", "pam-auth-update --package --enable mkhomedir sss || true")
+
 		sendResponse("ok", "LDAP configuration updated")
 	case "render_secrets":
 		if !verifySignature(cfg, msg) {

@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 type DiscoveryData struct {
 	Hostname     string                 `json:"hostname"`
 	IPs          []string               `json:"ip_addresses"`
+	PublicIP     string                 `json:"public_ip"`
 	OS           string                 `json:"os"`
 	Kernel       string                 `json:"kernel"`
 	CPUModel     string                 `json:"cpu"`
@@ -34,6 +37,29 @@ type TelemetryData struct {
 	ZFSHealth       string  `json:"zfs_health,omitempty"`
 	GPUUsage        float64  `json:"gpu_usage_percent,omitempty"`
 	Timestamp       string  `json:"timestamp"`
+}
+
+func getPublicIP() string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	endpoints := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+	for _, ep := range endpoints {
+		resp, err := client.Get(ep)
+		if err == nil && resp.StatusCode == 200 {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				ip := strings.TrimSpace(string(body))
+				if net.ParseIP(ip) != nil {
+					return ip
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // CollectDiscoveryData gathers static host information.
@@ -59,9 +85,12 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		cpuModel = cpuInfo[0].Model
 	}
 
+	pubIP := getPublicIP()
+
 	return DiscoveryData{
 		Hostname:    h.Hostname,
 		IPs:         ips,
+		PublicIP:    pubIP,
 		OS:          fmt.Sprintf("%s %s", h.OS, h.Platform),
 		Kernel:      h.KernelVersion,
 		CPUModel:    cpuModel,
