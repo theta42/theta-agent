@@ -110,9 +110,40 @@ fi
 
 log "Starting Theta Agent installation..."
 
+# Architecture and OS detection
+OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH_NAME="$(uname -m)"
+BINARY_NAME="theta-agent-linux-amd64"
+
+case "$OS_NAME" in
+  linux*)
+    case "$ARCH_NAME" in
+      x86_64|amd64) BINARY_NAME="theta-agent-linux-amd64" ;;
+      aarch64|arm64) BINARY_NAME="theta-agent-linux-arm64" ;;
+      armv7*|armhf) BINARY_NAME="theta-agent-linux-armv7" ;;
+      *) BINARY_NAME="theta-agent-linux-amd64" ;;
+    esac
+    ;;
+  darwin*)
+    case "$ARCH_NAME" in
+      x86_64|amd64) BINARY_NAME="theta-agent-darwin-amd64" ;;
+      arm64|aarch64) BINARY_NAME="theta-agent-darwin-arm64" ;;
+      *) BINARY_NAME="theta-agent-darwin-arm64" ;;
+    esac
+    ;;
+  mingw*|msys*|cygwin*)
+    case "$ARCH_NAME" in
+      aarch64|arm64) BINARY_NAME="theta-agent-windows-arm64.exe" ;;
+      *) BINARY_NAME="theta-agent-windows-amd64.exe" ;;
+    esac
+    ;;
+esac
+
+BINARY_URL="https://github.com/theta42/theta-agent/releases/latest/download/${BINARY_NAME}"
+
 # 3. Install binary
-log "Downloading binary from $BINARY_URL..."
-curl -fsSL "$BINARY_URL" -o "$BIN_PATH.tmp" || error "Failed to download binary."
+log "Detected OS: $OS_NAME ($ARCH_NAME) -> Downloading binary $BINARY_NAME..."
+curl -fsSL "$BINARY_URL" -o "$BIN_PATH.tmp" || error "Failed to download binary from $BINARY_URL"
 chmod +x "$BIN_PATH.tmp"
 mv -f "$BIN_PATH.tmp" "$BIN_PATH"
 

@@ -372,6 +372,52 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		sendResponse("ok", "system rebooting")
+	case "shutdown":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.Reboot {
+			log.Println("Shutdown rejected: capability disabled in agent.yml")
+			sendResponse("error", "shutdown capability disabled")
+			return
+		}
+		log.Printf("Executing shutdown...")
+		sendResponse("ok", "system shutting down")
+		if _, err := exec.Execute("shutdown", "-h", "now"); err != nil {
+			exec.Execute("poweroff")
+		}
+		return
+	case "systemd_action":
+		serviceName, _ := msg.Payload["service"].(string)
+		action, _ := msg.Payload["action"].(string)
+		if serviceName == "" {
+			sendResponse("error", "service name required")
+			return
+		}
+		if action == "" {
+			action = "status"
+		}
+		if action != "status" && !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		log.Printf("Executing systemctl %s %s...", action, serviceName)
+		out, err := exec.Execute("systemctl", action, serviceName)
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		respMap := map[string]interface{}{
+			"status":  "ok",
+			"service": serviceName,
+			"action":  action,
+			"output":  string(out),
+			"error":   errMsg,
+		}
+		respPayload, _ := json.Marshal(respMap)
+		c.WriteMessage(websocket.TextMessage, respPayload)
+		return
 	case "service_restart":
 		serviceName, ok := msg.Payload["service"].(string)
 		if !ok || !cfg.Capabilities.CanManageService(serviceName) {
