@@ -388,6 +388,50 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			exec.Execute("poweroff")
 		}
 		return
+	case "desktop_control", "lock_session", "logout_user", "display_off", "sleep_host":
+		subAction, _ := msg.Payload["subAction"].(string)
+		if subAction == "" {
+			subAction = msg.Type
+		}
+		targetUser, _ := msg.Payload["user"].(string)
+		log.Printf("Executing desktop control action '%s' for user '%s'...", subAction, targetUser)
+		var out []byte
+		var err error
+
+		switch subAction {
+		case "lock_session", "lock":
+			out, err = exec.Execute("loginctl", "lock-sessions")
+			if err != nil {
+				out, err = exec.Execute("xset", "dpms", "force", "off")
+			}
+		case "logout_user", "logout":
+			if targetUser != "" {
+				out, err = exec.Execute("pkill", "-KILL", "-u", targetUser)
+			} else {
+				out, err = exec.Execute("loginctl", "terminate-session")
+			}
+		case "display_off":
+			out, err = exec.Execute("xset", "dpms", "force", "off")
+		case "sleep_host", "sleep":
+			out, err = exec.Execute("systemctl", "suspend")
+		default:
+			sendResponse("error", fmt.Sprintf("unknown desktop action '%s'", subAction))
+			return
+		}
+
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		respMap := map[string]interface{}{
+			"status":    "ok",
+			"subAction": subAction,
+			"output":    string(out),
+			"error":     errMsg,
+		}
+		respPayload, _ := json.Marshal(respMap)
+		c.WriteMessage(websocket.TextMessage, respPayload)
+		return
 	case "systemd_action":
 		serviceName, _ := msg.Payload["service"].(string)
 		action, _ := msg.Payload["action"].(string)
