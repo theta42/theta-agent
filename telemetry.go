@@ -3,8 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -15,24 +20,223 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 )
 
+type CPUDetails struct {
+	Model   string  `json:"model"`
+	Cores   int     `json:"cores"`
+	Threads int     `json:"threads"`
+	MHz     float64 `json:"mhz"`
+}
+
+type RAMDetails struct {
+	TotalBytes          uint64  `json:"total_bytes"`
+	UsedBytes           uint64  `json:"used_bytes"`
+	BuffersCacheBytes   uint64  `json:"buffers_cache_bytes"`
+	FreeBytes           uint64  `json:"free_bytes"`
+	UsedPercent         float64 `json:"used_percent"`
+	BuffersCachePercent float64 `json:"buffers_cache_percent"`
+	FreePercent         float64 `json:"free_percent"`
+}
+
+type DiskItem struct {
+	Mountpoint   string  `json:"mountpoint"`
+	Device       string  `json:"device"`
+	FSType       string  `json:"fstype"`
+	DriveType    string  `json:"drivetype"`
+	TotalBytes   uint64  `json:"total_bytes"`
+	UsedBytes    uint64  `json:"used_bytes"`
+	FreeBytes    uint64  `json:"free_bytes"`
+	UsagePercent float64 `json:"usage_percent"`
+}
+
 type DiscoveryData struct {
-	Hostname    string   `json:"hostname"`
-	IPs        []string `json:"ip_addresses"`
-	OS          string   `json:"os"`
-	Kernel      string   `json:"kernel"`
-	CPUModel    string   `json:"cpu"`
-	RAMTotalGB  float64  `json:"ram_total_gb"`
-	DiskTotalGB float64  `json:"disk_total_gb"`
-	Location    string   `json:"location"`
+	Hostname     string                 `json:"hostname"`
+	IPs          []string               `json:"ip_addresses"`
+	PublicIP     string                 `json:"public_ip"`
+	OS           string                 `json:"os"`
+	Kernel       string                 `json:"kernel"`
+	CPUModel     string                 `json:"cpu"`
+	CPUDetails   CPUDetails             `json:"cpu_details"`
+	RAMTotalGB   float64                `json:"ram_total_gb"`
+	RAMDetails   RAMDetails             `json:"ram_details"`
+	DiskTotalGB  float64                `json:"disk_total_gb"`
+	Disks        []DiskItem             `json:"disks"`
+	Location     string                 `json:"location"`
+	Capabilities map[string]interface{} `json:"capabilities"`
 }
 
 type TelemetryData struct {
-	CPUUsagePercent float64 `json:"cpu_usage_percent"`
-	RAMUsagePercent float64 `json:"ram_usage_percent"`
-	DiskUsagePercent float64 `json:"disk_usage_percent"`
-	ZFSHealth       string  `json:"zfs_health,omitempty"`
-	GPUUsage        float64  `json:"gpu_usage_percent,omitempty"`
-	Timestamp       string  `json:"timestamp"`
+	CPUUsagePercent  float64    `json:"cpu_usage_percent"`
+	CPUDetails       CPUDetails `json:"cpu_details"`
+	RAMUsagePercent  float64    `json:"ram_usage_percent"`
+	RAMDetails       RAMDetails `json:"ram_details"`
+	DiskUsagePercent float64    `json:"disk_usage_percent"`
+	Disks            []DiskItem `json:"disks"`
+	ZFSHealth        string     `json:"zfs_health,omitempty"`
+	GPUUsage         float64    `json:"gpu_usage_percent,omitempty"`
+	Timestamp        string     `json:"timestamp"`
+}
+
+func getPublicIP() string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	endpoints := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+	for _, ep := range endpoints {
+		resp, err := client.Get(ep)
+		if err == nil && resp.StatusCode == 200 {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				ip := strings.TrimSpace(string(body))
+				if net.ParseIP(ip) != nil {
+					return ip
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func collectCPUDetails() CPUDetails {
+	cpuInfo, _ := cpu.Info()
+	model := "Unknown"
+	cores := 0
+	mhz := 0.0
+	if len(cpuInfo) > 0 {
+		model = cpuInfo[0].ModelName
+		if model == "" {
+			model = cpuInfo[0].Model
+		}
+		cores = int(cpuInfo[0].Cores)
+		mhz = cpuInfo[0].Mhz
+	}
+	threads := runtime.NumCPU()
+	if t, err := cpu.Counts(true); err == nil && t > 0 {
+		threads = t
+	}
+	if cores <= 0 {
+		if c, err := cpu.Counts(false); err == nil && c > 0 {
+			cores = c
+		} else {
+			cores = threads
+		}
+	}
+	return CPUDetails{
+		Model:   model,
+		Cores:   cores,
+		Threads: threads,
+		MHz:     mhz,
+	}
+}
+
+func collectRAMDetails() RAMDetails {
+	vm, err := mem.VirtualMemory()
+	if err != nil || vm == nil {
+		return RAMDetails{}
+	}
+	bufCache := vm.Buffers + vm.Cached
+	total := float64(vm.Total)
+	usedPct := 0.0
+	bufPct := 0.0
+	freePct := 0.0
+	if total > 0 {
+		usedPct = (float64(vm.Used) / total) * 100.0
+		bufPct = (float64(bufCache) / total) * 100.0
+		freePct = (float64(vm.Free) / total) * 100.0
+	}
+	return RAMDetails{
+		TotalBytes:          vm.Total,
+		UsedBytes:           vm.Used,
+		BuffersCacheBytes:   bufCache,
+		FreeBytes:           vm.Free,
+		UsedPercent:         usedPct,
+		BuffersCachePercent: bufPct,
+		FreePercent:         freePct,
+	}
+}
+
+func getDriveType(device string) string {
+	devName := filepath.Base(device)
+	devName = strings.TrimRight(devName, "0123456789p")
+	if strings.HasPrefix(devName, "nvme") {
+		return "NVMe"
+	}
+	rotPath := filepath.Join("/sys/block", devName, "queue/rotational")
+	data, err := os.ReadFile(rotPath)
+	if err == nil {
+		val := strings.TrimSpace(string(data))
+		if val == "0" {
+			return "SSD"
+		} else if val == "1" {
+			return "HDD"
+		}
+	}
+	return "SSD/HDD"
+}
+
+func collectDiskItems() []DiskItem {
+	var items []DiskItem
+	partitions, err := disk.Partitions(false)
+	if err != nil || len(partitions) == 0 {
+		d, err2 := disk.Usage("/")
+		if err2 == nil {
+			items = append(items, DiskItem{
+				Mountpoint:   "/",
+				FSType:       d.Fstype,
+				DriveType:    getDriveType(d.Path),
+				TotalBytes:   d.Total,
+				UsedBytes:    d.Used,
+				FreeBytes:    d.Free,
+				UsagePercent: d.UsedPercent,
+			})
+		}
+		return items
+	}
+	seen := make(map[string]bool)
+	for _, p := range partitions {
+		if strings.HasPrefix(p.Mountpoint, "/proc") || strings.HasPrefix(p.Mountpoint, "/sys") || strings.HasPrefix(p.Mountpoint, "/dev") {
+			continue
+		}
+		if seen[p.Mountpoint] {
+			continue
+		}
+		seen[p.Mountpoint] = true
+		u, err := disk.Usage(p.Mountpoint)
+		if err != nil || u.Total == 0 {
+			continue
+		}
+		fstype := p.Fstype
+		if fstype == "" {
+			fstype = u.Fstype
+		}
+		items = append(items, DiskItem{
+			Mountpoint:   p.Mountpoint,
+			Device:       p.Device,
+			FSType:       fstype,
+			DriveType:    getDriveType(p.Device),
+			TotalBytes:   u.Total,
+			UsedBytes:    u.Used,
+			FreeBytes:    u.Free,
+			UsagePercent: u.UsedPercent,
+		})
+	}
+	if len(items) == 0 {
+		d, err2 := disk.Usage("/")
+		if err2 == nil {
+			items = append(items, DiskItem{
+				Mountpoint:   "/",
+				FSType:       d.Fstype,
+				DriveType:    getDriveType(d.Path),
+				TotalBytes:   d.Total,
+				UsedBytes:    d.Used,
+				FreeBytes:    d.Free,
+				UsagePercent: d.UsedPercent,
+			})
+		}
+	}
+	return items
 }
 
 // CollectDiscoveryData gathers static host information.
@@ -49,45 +253,83 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		}
 	}
 
-	vm, _ := mem.VirtualMemory()
-	d, _ := disk.Usage("/")
+	vm := collectRAMDetails()
+	disks := collectDiskItems()
+	cpuDet := collectCPUDetails()
 
-	cpuInfo, _ := cpu.Info()
-	cpuModel := "Unknown"
-	if len(cpuInfo) > 0 {
-		cpuModel = cpuInfo[0].Model
+	pubIP := getPublicIP()
+
+	diskTotalGB := 0.0
+	for _, d := range disks {
+		if d.Mountpoint == "/" {
+			diskTotalGB = float64(d.TotalBytes) / (1024 * 1024 * 1024)
+			break
+		}
+	}
+	if diskTotalGB == 0 && len(disks) > 0 {
+		diskTotalGB = float64(disks[0].TotalBytes) / (1024 * 1024 * 1024)
 	}
 
 	return DiscoveryData{
-		Hostname:    h.Hostname,
-		IPs:         ips,
-		OS:          fmt.Sprintf("%s %s", h.OS, h.Platform),
-		Kernel:      h.KernelVersion,
-		CPUModel:    cpuModel,
-		RAMTotalGB:  float64(vm.Total) / (1024 * 1024 * 1024),
-		DiskTotalGB: float64(d.Total) / (1024 * 1024 * 1024),
-		Location:    cfg.Location,
+		Hostname:     h.Hostname,
+		IPs:          ips,
+		PublicIP:     pubIP,
+		OS:           fmt.Sprintf("%s %s", h.OS, h.Platform),
+		Kernel:       h.KernelVersion,
+		CPUModel:     cpuDet.Model,
+		CPUDetails:   cpuDet,
+		RAMTotalGB:   float64(vm.TotalBytes) / (1024 * 1024 * 1024),
+		RAMDetails:   vm,
+		DiskTotalGB:  diskTotalGB,
+		Disks:        disks,
+		Location:     cfg.Location,
+		Capabilities: map[string]interface{}{
+			"telemetry":       cfg.Capabilities.Telemetry,
+			"configure_ldap":  cfg.Capabilities.ConfigureLDAP,
+			"ldap_tunnel":     cfg.Capabilities.LdapTunnel,
+			"secrets":         cfg.Capabilities.Secrets,
+			"iam":             cfg.Capabilities.IAM,
+			"reboot":          cfg.Capabilities.Reboot,
+			"shutdown":        true,
+			"service_control": cfg.Capabilities.ServiceControl,
+			"arbitrary_bash":  cfg.Capabilities.ArbitraryBash,
+		},
 	}
 }
 
 // CollectTelemetryData gathers real-time performance metrics including ZFS and GPU.
 func CollectTelemetryData(exec Executor) TelemetryData {
 	cpuPerc, _ := cpu.Percent(time.Second, false)
-	vm, _ := mem.VirtualMemory()
-	d, _ := disk.Usage("/")
+	vm := collectRAMDetails()
+	disks := collectDiskItems()
+	cpuDet := collectCPUDetails()
 
 	cpuVal := 0.0
 	if len(cpuPerc) > 0 {
 		cpuVal = cpuPerc[0]
 	}
 
+	diskVal := 0.0
+	for _, d := range disks {
+		if d.Mountpoint == "/" {
+			diskVal = d.UsagePercent
+			break
+		}
+	}
+	if diskVal == 0 && len(disks) > 0 {
+		diskVal = disks[0].UsagePercent
+	}
+
 	return TelemetryData{
 		CPUUsagePercent:  cpuVal,
+		CPUDetails:       cpuDet,
 		RAMUsagePercent:  vm.UsedPercent,
-		DiskUsagePercent: d.UsedPercent,
-		ZFSHealth:       collectZFSHealth(exec),
-		GPUUsage:        collectGPUUsage(exec),
-		Timestamp:       time.Now().Format(time.RFC3339),
+		RAMDetails:       vm,
+		DiskUsagePercent: diskVal,
+		Disks:            disks,
+		ZFSHealth:        collectZFSHealth(exec),
+		GPUUsage:         collectGPUUsage(exec),
+		Timestamp:        time.Now().Format(time.RFC3339),
 	}
 }
 
@@ -154,10 +396,13 @@ func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopC
 					Type: "telemetry",
 					Payload: map[string]interface{}{
 						"cpu_usage_percent":  telemetry.CPUUsagePercent,
+						"cpu_details":        telemetry.CPUDetails,
 						"ram_usage_percent":  telemetry.RAMUsagePercent,
+						"ram_details":        telemetry.RAMDetails,
 						"disk_usage_percent": telemetry.DiskUsagePercent,
+						"disks":              telemetry.Disks,
 						"zfs_health":         telemetry.ZFSHealth,
-						"gpu_usage_percent":   telemetry.GPUUsage,
+						"gpu_usage_percent":  telemetry.GPUUsage,
 						"timestamp":          telemetry.Timestamp,
 					},
 				})
