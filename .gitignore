@@ -1,0 +1,5 @@
+# Binaries and build output
+theta-agent
+theta-agent-*
+dist/
+*.exe

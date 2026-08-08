@@ -5,6 +5,16 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.7.0] - 2026-08-08
+
+### Added
+- **Multi-Architecture & Multi-OS Binaries.** Built cross-platform targets for Linux ARM (arm64, armv7), Windows (amd64, arm64), and macOS (Intel, Apple Silicon M1/M2/M3/M4).
+- **Cross-Compilation Pipeline (`build_all.sh`).** Automated Go build toolchain generating static binaries for all 7 target platforms.
+- **Installer OS & Architecture Auto-Detection.** Updated `install.sh` to auto-detect `uname -s` and `uname -m` to download matching release binaries.
+
+### Fixed
+- **Systemd & Docker Command Dispatching.** Handled systemd actions (`start`, `stop`, `restart`, `reload`) and Docker container metrics/actions cleanly across Linux distributions.
+
 ## [v1.6.0] - 2026-08-07
 
 ### Added

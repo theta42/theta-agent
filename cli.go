@@ -32,7 +32,7 @@ func handleCLI(args []string) bool {
 		runReinitialize(args[1:])
 		return true
 	case "--version", "version", "-v":
-		fmt.Println("Theta Agent v1.2.0")
+		fmt.Println("Theta Agent v1.7.0")
 		return true
 	case "--help", "help", "-h":
 		printUsage()
