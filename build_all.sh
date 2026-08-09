@@ -31,6 +31,13 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DI
 echo "  -> darwin/arm64 (macOS Apple Silicon)..."
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-darwin-arm64"
 
+echo "Building Theta Agent Tray binaries..."
+echo "  -> linux/amd64 tray..."
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-linux-amd64" ./cmd/theta-agent-tray/
+
+echo "  -> linux/arm64 tray..."
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-linux-arm64" ./cmd/theta-agent-tray/
+
 echo ""
 echo "Build complete! Artifacts in $DIST_DIR:"
 ls -lh "$DIST_DIR"

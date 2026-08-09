@@ -3,3 +3,4 @@ theta-agent
 theta-agent-*
 dist/
 *.exe
+agent.yml
