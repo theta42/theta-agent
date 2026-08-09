@@ -174,20 +174,48 @@ EOF
 else
   log "Preserving existing configuration at $CONFIG_FILE"
 fi
-chmod 600 "$CONFIG_FILE"
-
-# An agent with no public_key cannot verify signed commands and will refuse
-# every one of them. That is the safe default, but it is silent at run time, so
-# say it plainly here where the operator is watching.
-if ! grep -qE '^public_key:[[:space:]]*"[^"]+"' "$CONFIG_FILE" 2>/dev/null; then
-  log "WARNING: no public_key configured — this agent will report telemetry but"
-  log "         REFUSE reboot / configure_ldap / arbitrary_bash / update_binary."
-  log "         Re-run with --public-key \"<base64 key>\" (shown at enrollment)."
+# Ensure theta-secrets & theta groups exist for non-root secret access
+log "Configuring non-root secret access groups (theta-secrets)..."
+if command -v groupadd >/dev/null 2>&1; then
+  getent group theta-secrets >/dev/null 2>&1 || groupadd -r theta-secrets 2>/dev/null || true
+  getent group theta >/dev/null 2>&1 || groupadd -r theta 2>/dev/null || true
 fi
+SECRETS_GROUP="root"
+if getent group theta-secrets >/dev/null 2>&1; then
+  SECRETS_GROUP="theta-secrets"
+elif getent group theta >/dev/null 2>&1; then
+  SECRETS_GROUP="theta"
+fi
+chown -R "root:$SECRETS_GROUP" "$CONFIG_DIR" 2>/dev/null || true
+chmod 750 "$CONFIG_DIR"
+chmod 640 "$CONFIG_FILE"
 
-# 4b. Ensure SSSD dependencies are installed if configure_ldap is enabled
-if [ "$INSTALL_SSSD" -eq 1 ] || grep -qE -i 'configure_ldap:[[:space:]]*true' "$CONFIG_FILE" 2>/dev/null; then
-  install_sssd_deps
+# 4c. Setup Desktop Tray Icon companion
+TRAY_BINARY_NAME="theta-agent-tray-${OS_NAME}-${ARCH_NAME}"
+case "$OS_NAME" in
+  linux*) TRAY_BINARY_NAME="theta-agent-tray-linux-amd64" ;;
+  windows*) TRAY_BINARY_NAME="theta-agent-tray-windows-amd64.exe" ;;
+esac
+TRAY_BIN_PATH="/usr/local/bin/theta-agent-tray"
+TRAY_URL="https://github.com/theta42/theta-agent/releases/latest/download/${TRAY_BINARY_NAME}"
+
+log "Attempting to install desktop tray companion ($TRAY_BINARY_NAME)..."
+if curl -fsSL "$TRAY_URL" -o "$TRAY_BIN_PATH.tmp" 2>/dev/null; then
+  chmod +x "$TRAY_BIN_PATH.tmp"
+  mv -f "$TRAY_BIN_PATH.tmp" "$TRAY_BIN_PATH"
+  mkdir -p /etc/xdg/autostart
+  cat <<EOF > /etc/xdg/autostart/theta-agent-tray.desktop
+[Desktop Entry]
+Type=Application
+Name=Theta Agent Tray
+Comment=Theta Agent Desktop Tray Companion
+Exec=/usr/local/bin/theta-agent-tray
+Icon=network-workgroup
+Terminal=false
+Categories=Utility;System;
+X-GNOME-Autostart-enabled=true
+EOF
+  log "Desktop tray companion installed at $TRAY_BIN_PATH with autostart."
 fi
 
 # 5. Setup systemd service
