@@ -5,6 +5,13 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0] - 2026-08-09
+
+### Added
+- **Full-Color Desktop System Tray Companion.** Built `theta-agent-tray` with full-color rasterized `theta42.svg` status badges (🔴 Disconnected, 🟡 Away/WAN, 🟢 Home LAN, 🔵 WireGuard Active) and Unix socket IPC.
+- **Systemd Logind User Session Detection.** Updated `collectLoggedUsers()` to query `loginctl list-sessions --no-legend` so active Wayland/GDM/LightDM desktop sessions are captured.
+- **Full Telemetry Field Preservation.** Preserved `logged_users` and `host_details` in periodic telemetry stream payloads.
+
 ## [v1.8.0] - 2026-08-08
 
 ### Added
