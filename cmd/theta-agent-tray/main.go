@@ -26,6 +26,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"fyne.io/systray"
@@ -33,7 +35,16 @@ import (
 
 // ── IPC types (duplicated from the main agent package; tray is its own binary) ──
 
-const TraySocket = "/run/theta/tray.sock"
+// traySocketPaths returns the daemon IPC socket paths for this platform, in
+// the same order the daemon tries to bind them. Windows has no /run or /tmp,
+// so it uses a Unix socket under the per-user temp dir; Linux keeps the
+// original pair.
+func traySocketPaths() []string {
+	if runtime.GOOS == "windows" {
+		return []string{filepath.Join(os.TempDir(), "theta-tray.sock")}
+	}
+	return []string{"/run/theta/tray.sock", "/tmp/theta-tray.sock"}
+}
 
 type TrayColor string
 
@@ -73,8 +84,10 @@ var (
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
-	// Silent exit if no graphical session is available.
-	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+	// Silent exit if no graphical session is available. Only meaningful on
+	// X11/Wayland: Windows never sets these variables and the tray is simply
+	// always a valid thing to run there.
+	if runtime.GOOS != "windows" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		log.Println("theta-agent-tray: no graphical session detected (DISPLAY/WAYLAND_DISPLAY not set), exiting")
 		os.Exit(0)
 	}
@@ -149,7 +162,7 @@ func onReady() {
 // between attempts. On connect it streams status updates until the connection
 // drops, then retries.
 func connectWithRetry() {
-	socketPaths := []string{"/run/theta/tray.sock", "/tmp/theta-tray.sock"}
+	socketPaths := traySocketPaths()
 	for {
 		var conn net.Conn
 		var err error
