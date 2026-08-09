@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -128,18 +129,32 @@ func (ts *trayServer) Push(status TrayStatus) {
 
 // UpdateTrayStatus computes the current TrayColor from the known state
 // and pushes it to all connected tray clients.
-func UpdateTrayStatus(connected bool, agentPublicIP, homePublicIP string, vpnActive, autoVPN bool, siteName string) {
+func UpdateTrayStatus(connected bool, agentPublicIP, homePublicIP string, vpnActive, autoVPN bool, siteName, serverURL string) {
 	color := ColorRed
 	statusText := "Not connected to directory"
 	isHome := false
 
 	if connected {
-		if vpnActive && homePublicIP != "" {
+		// Server URL is local (localhost, 127.0.0.1, LAN IP, or .local)
+		isLocalServer := strings.Contains(serverURL, "localhost") ||
+			strings.Contains(serverURL, "127.0.0.1") ||
+			strings.Contains(serverURL, ".local") ||
+			strings.Contains(serverURL, "192.168.") ||
+			strings.Contains(serverURL, "10.")
+
+		// On Home LAN if:
+		// 1) Both agent & home public IPs are known and match, OR
+		// 2) Connecting to a local/LAN SSO server, OR
+		// 3) homePublicIP is not yet set by directory (default to local home)
+		if (homePublicIP != "" && agentPublicIP != "" && agentPublicIP == homePublicIP) || isLocalServer || homePublicIP == "" {
+			isHome = true
+		}
+
+		if vpnActive {
 			color = ColorBlue
 			statusText = fmt.Sprintf("VPN active → %s", siteName)
-		} else if homePublicIP != "" && agentPublicIP != "" && agentPublicIP == homePublicIP {
+		} else if isHome {
 			color = ColorGreen
-			isHome = true
 			statusText = fmt.Sprintf("Home — %s", siteName)
 		} else {
 			color = ColorYellow

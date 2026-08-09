@@ -101,5 +101,5 @@ func checkAndPush(cfg *Config, connectedFn func() bool) {
 		siteName = "home"
 	}
 
-	UpdateTrayStatus(connected, agentIP, homeIP, vpn, autoVPN, siteName)
+	UpdateTrayStatus(connected, agentIP, homeIP, vpn, autoVPN, siteName, cfg.ServerURL)
 }
