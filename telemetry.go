@@ -220,46 +220,75 @@ func getDriveType(device string) string {
 func collectLoggedUsers() []LoggedUser {
 	var list []LoggedUser
 	seen := make(map[string]bool)
-	users, err := host.Users()
-	if err == nil {
-		for _, u := range users {
-			key := fmt.Sprintf("%s@%s:%s", u.User, u.Terminal, u.Host)
-			if seen[key] {
-				continue
+
+	// 1. Try loginctl list-sessions --no-legend (systemd logind)
+	exec := SystemExecutor{}
+	if out, err := exec.Execute("loginctl", "list-sessions", "--no-legend"); err == nil && len(out) > 0 {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			// Format: SESSION UID USER SEAT TTY STATE IDLE SINCE
+			// e.g. c2 1000 william seat0 tty7 active no -
+			if len(fields) >= 3 {
+				user := fields[2]
+				term := ""
+				if len(fields) >= 5 && fields[4] != "-" {
+					term = fields[4]
+				}
+				key := fmt.Sprintf("%s@%s", user, term)
+				if !seen[key] && user != "" {
+					seen[key] = true
+					list = append(list, LoggedUser{
+						User:     user,
+						Terminal: term,
+						Host:     "localhost",
+						Started:  time.Now().Unix(),
+					})
+				}
 			}
-			seen[key] = true
-			list = append(list, LoggedUser{
-				User:     u.User,
-				Terminal: u.Terminal,
-				Host:     u.Host,
-				Started:  int64(u.Started),
-			})
 		}
 	}
 
+	// 2. Fallback to gopsutil / who if loginctl returned nothing
 	if len(list) == 0 {
-		exec := SystemExecutor{}
-		out, err := exec.Execute("who")
-		if err == nil && len(out) > 0 {
-			lines := strings.Split(string(out), "\n")
-			for _, line := range lines {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					user := fields[0]
-					term := fields[1]
-					hostStr := ""
-					if len(fields) >= 5 {
-						hostStr = strings.Trim(fields[4], "()")
-					}
-					key := fmt.Sprintf("%s@%s:%s", user, term, hostStr)
-					if !seen[key] {
-						seen[key] = true
-						list = append(list, LoggedUser{
-							User:     user,
-							Terminal: term,
-							Host:     hostStr,
-							Started:  time.Now().Unix(),
-						})
+		users, err := host.Users()
+		if err == nil {
+			for _, u := range users {
+				key := fmt.Sprintf("%s@%s:%s", u.User, u.Terminal, u.Host)
+				if !seen[key] {
+					seen[key] = true
+					list = append(list, LoggedUser{
+						User:     u.User,
+						Terminal: u.Terminal,
+						Host:     u.Host,
+						Started:  int64(u.Started),
+					})
+				}
+			}
+		}
+		if len(list) == 0 {
+			out, err := exec.Execute("who")
+			if err == nil && len(out) > 0 {
+				lines := strings.Split(string(out), "\n")
+				for _, line := range lines {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 {
+						user := fields[0]
+						term := fields[1]
+						hostStr := ""
+						if len(fields) >= 5 {
+							hostStr = strings.Trim(fields[4], "()")
+						}
+						key := fmt.Sprintf("%s@%s:%s", user, term, hostStr)
+						if !seen[key] {
+							seen[key] = true
+							list = append(list, LoggedUser{
+								User:     user,
+								Terminal: term,
+								Host:     hostStr,
+								Started:  time.Now().Unix(),
+							})
+						}
 					}
 				}
 			}
@@ -530,8 +559,9 @@ func collectGPUUsage(exec Executor) float64 {
 func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopCh <-chan struct{}) {
 	cfg := cm.Get()
 
-	// 1. Immediate Discovery Push
+	// 1. Immediate Discovery Push & Initial Telemetry Frame
 	pushDiscovery(c, cfg)
+	pushTelemetry(c, exec)
 
 	// If telemetry capability is disabled in agent.yml, return early after discovery
 	if !cfg.Capabilities.Telemetry {
@@ -562,28 +592,31 @@ func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopC
 					lastIPs = currentIPs
 				}
 
-				telemetry := CollectTelemetryData(exec)
-				payload, _ := json.Marshal(WSMessage{
-					Type: "telemetry",
-					Payload: map[string]interface{}{
-						"cpu_usage_percent":  telemetry.CPUUsagePercent,
-						"cpu_details":        telemetry.CPUDetails,
-						"ram_usage_percent":  telemetry.RAMUsagePercent,
-						"ram_details":        telemetry.RAMDetails,
-						"disk_usage_percent": telemetry.DiskUsagePercent,
-						"disks":              telemetry.Disks,
-						"zfs_health":         telemetry.ZFSHealth,
-						"gpu_usage_percent":  telemetry.GPUUsage,
-						"timestamp":          telemetry.Timestamp,
-					},
-				})
-				if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
-					log.Printf("Failed to stream telemetry: %v", err)
-					return
-				}
+				pushTelemetry(c, exec)
 			}
 		}
 	}()
+}
+
+func pushTelemetry(c MessageWriter, exec Executor) {
+	telemetry := CollectTelemetryData(exec)
+	payload, _ := json.Marshal(WSMessage{
+		Type: "telemetry",
+		Payload: map[string]interface{}{
+			"cpu_usage_percent":  telemetry.CPUUsagePercent,
+			"cpu_details":        telemetry.CPUDetails,
+			"ram_usage_percent":  telemetry.RAMUsagePercent,
+			"ram_details":        telemetry.RAMDetails,
+			"disk_usage_percent": telemetry.DiskUsagePercent,
+			"disks":              telemetry.Disks,
+			"logged_users":       telemetry.LoggedUsers,
+			"host_details":       telemetry.HostDetails,
+			"zfs_health":         telemetry.ZFSHealth,
+			"gpu_usage_percent":  telemetry.GPUUsage,
+			"timestamp":          telemetry.Timestamp,
+		},
+	})
+	_ = c.WriteMessage(websocket.TextMessage, payload)
 }
 
 func collectIPs() []string {
