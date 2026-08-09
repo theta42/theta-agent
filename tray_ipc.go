@@ -7,15 +7,33 @@ package main
 // Protocol: newline-delimited JSON. The daemon streams TrayStatus messages to
 // any connected tray client. The tray sends TrayCommand messages to the daemon.
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+)
 
-// TraySocket is the path to the IPC socket the daemon listens on.
-// Falls back to /tmp/theta-tray.sock if /run/theta/ is not writable.
-var TraySocketPaths = []string{
-	"/run/theta/tray.sock",
-	"/tmp/theta-tray.sock",
-}
-const TraySocket = "/tmp/theta-tray.sock"
+// TraySocketPaths are the paths the daemon tries to bind, in order.
+//
+// Windows has no /run or /tmp; a Unix socket in the per-user temp dir works
+// there (AF_UNIX is supported since Windows 10 1803) and needs no admin
+// rights. Linux keeps the original /run/theta path with a /tmp fallback.
+var TraySocketPaths = func() []string {
+	if runtime.GOOS == "windows" {
+		return []string{filepath.Join(os.TempDir(), "theta-tray.sock")}
+	}
+	return []string{"/run/theta/tray.sock", "/tmp/theta-tray.sock"}
+}()
+
+// TraySocket is the canonical socket path the tray dials. It matches the last
+// entry in TraySocketPaths on each platform.
+var TraySocket = func() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.TempDir(), "theta-tray.sock")
+	}
+	return "/tmp/theta-tray.sock"
+}()
 
 
 // TrayColor represents the icon color state.
