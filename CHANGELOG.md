@@ -5,6 +5,13 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.1] - 2026-08-09
+
+### Fixed
+- **CLI version reporting**: Expose correct version string (`v2.0.0` / `AgentVersion`) dynamically via CLI command flags.
+- **Secrets access for non-root users**: Configure `theta-secrets` and `theta` groups with appropriate directory permissions (`0750` / `0640` on `/etc/theta42/agent.yml`) to allow authorized non-root users to retrieve secrets.
+- **Autostart Tray Icon Companion**: Install tray icon companion app and configure `/etc/xdg/autostart/theta-agent-tray.desktop` entry for desktop environments.
+
 ## [v2.0.0] - 2026-08-09
 
 ### Added
