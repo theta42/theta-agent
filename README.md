@@ -1,8 +1,8 @@
 # Theta Agent
 
-Theta Agent is a unified endpoint management daemon for the theta42 stack. It replaces legacy bash installation scripts and one-way metric scripts with a powerful, 2-way Command & Control (C2) Go daemon.
+Theta Agent is a lightweight, cross-platform host telemetry, secret delivery, and desktop control daemon for the [Theta Suite](https://github.com/theta42/theta-suite) ecosystem. Built in Go, it replaces legacy bash scripts and one-way metrics with a secure, 2-way WebSocket connection to **Theta Directory** (`theta-directory`).
 
-The agent dials out to the central SSO Manager via a persistent WebSocket connection, enabling real-time telemetry, dynamic discovery, and secure remote operations.
+The agent dials out over a single persistent outbound WebSocket connection (`wss://sso.example.com/api/agent/ws`), enabling real-time telemetry, hardware discovery, desktop session controls, and secret delivery.
 
 ## What you get
 
