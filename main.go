@@ -6,8 +6,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 )
+
+// wsConnected is flipped atomically by connectWebSocket as the connection
+// comes up and drops, so StartHomeMonitor can read it without a mutex.
+var wsConnected atomic.Bool
 
 func main() {
 	if len(os.Args) > 1 && handleCLI(os.Args[1:]) {
@@ -39,8 +44,14 @@ func main() {
 	// Initialize system executor
 	exec := &SystemExecutor{}
 
+	// Tray IPC server — desktop tray connects here for status updates.
+	go globalTrayServer.Start()
+
 	// WebSocket connection to SSO Manager
 	go connectWebSocket(cm, exec)
+
+	// Home detection + tray status push (polls public IP every 60s).
+	go StartHomeMonitor(cfg, func() bool { return wsConnected.Load() })
 
 	// Block until signal is received
 	sigs := make(chan os.Signal, 1)

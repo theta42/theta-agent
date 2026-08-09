@@ -157,6 +157,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		}
 
 		log.Println("Successfully connected to SSO Manager.")
+		wsConnected.Store(true)
 
 		stopCh := make(chan struct{})
 
@@ -230,6 +231,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		}
 
 		// Cleanup on disconnect
+		wsConnected.Store(false)
 		close(stopCh)
 		c.Close()
 
@@ -336,11 +338,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		os.Exit(0)
 	case "config":
 		// A config frame carrying credentials means the server accepted our
-		// join key and enrolled this host. Persist what it issued -- our own
-		// per-agent token and the public key to pin -- so the next connection
-		// authenticates as this agent rather than re-enrolling, and so signed
-		// commands can be verified. This is what lets an install ship with only
-		// a join key and still end up fully configured.
+		// join key and enrolled this host.
 		if enrolled, _ := msg.Payload["enrolled"].(bool); enrolled {
 			token, _ := msg.Payload["auth_token"].(string)
 			pubKey, _ := msg.Payload["public_key"].(string)
@@ -352,6 +350,12 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			}
 			sendResponse("ok", "enrollment stored")
 			return
+		}
+		// Extract the home site's public IP if the server pushes it, so the
+		// tray icon can determine whether we are on the home LAN.
+		if sitePublicIP, ok := msg.Payload["site_public_ip"].(string); ok && sitePublicIP != "" {
+			SetHomePublicIP(sitePublicIP)
+			log.Printf("[home-detect] home site public IP: %s", sitePublicIP)
 		}
 		log.Printf("Received config payload: %v", msg.Payload)
 		sendResponse("ok", "Configuration received")
