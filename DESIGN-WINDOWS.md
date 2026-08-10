@@ -206,22 +206,24 @@ Install-time behavior:
 
 ## 9. Build & release (GitHub Actions + Azure Trusted Signing)
 
-- **Local dev builds** are self-signed / unsigned.
+- **No binaries live in the repos.** Every artifact is built on GitHub Actions and
+  attached to the release (`releases/latest/download/<artifact>`) — see
+  `.github/workflows/release.yml`. Consumers download from there:
+  - `install.sh` (Linux) already fetches the agent/tray from `releases/latest/download/`.
+  - The SSO's Install Agent modal emits a PowerShell one-liner that downloads the
+    Windows `setup.exe` from `releases/latest/download/`.
 - **Production builds** run in GitHub Actions:
-  - Build matrix: agent `windows-amd64`/`arm64`, tray, helper, OpenCredential CP
-    (MSBuild/.NET 4.8), then the Inno installer.
-  - **Azure Trusted Signing** signs the agent, tray, helper, CP DLL, and installer
-    (workflow federated identity → AzureSignTool). Authenticode chains verify offline,
-    which suits air-gap; SmartScreen reputation simply won't accumulate, which is expected.
-  - Release tags (e.g. `v2.0.1`) name the artifacts; `SHA256SUMS` manifest is generated.
-- **The SSO holds all resources** (client installer is the deliverable; the server stack
-  is assumed to already run inside the air-gap):
-  - New resource tree: `/resources/theta-agent/windows/...` for the installer, loose
-    binaries, and `SHA256SUMS`.
-  - Release workflow uploads artifacts (admin-gated publish endpoint or mounted resource
-    dir); SSO pins a "latest" pointer.
-  - Self-update feed uses the existing signed `update_binary` flow; the agent's fetch is
-    made platform-aware (currently `cli.go` hardcodes the Linux artifact name).
+  - Matrix: agent for `linux`(amd64/arm64/armv7), `windows`(amd64/arm64), `darwin`(amd64/arm64);
+    tray for linux/windows; helper for windows.
+  - The fully-offline Inno installer compiles on a `windows-latest` runner via
+    `scripts/setup-build-env.ps1 -SkipGo -Build -CI` (which also runs `go test ./...`).
+  - **Azure Trusted Signing** optionally signs everything (workflow federated identity →
+    AzureSignTool, gated on secrets). Authenticode chains verify offline, which suits
+    air-gap; SmartScreen reputation simply won't accumulate, which is expected.
+  - Release tags (e.g. `v2.1.0`) name the artifacts; a `SHA256SUMS` manifest is attached.
+- **Self-update** uses the existing signed `update_binary` flow; the agent's fetch is
+  platform-aware. On an air-gapped LAN the SSO can mirror the release artifacts into
+  `/resources/theta-agent/` at deploy time; nothing on the target host hits the internet.
 
 ## 10. Air-gap considerations
 
