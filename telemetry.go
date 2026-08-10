@@ -425,7 +425,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.1.2"
+const AgentVersion = "v2.1.3"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
