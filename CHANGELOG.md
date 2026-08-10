@@ -5,6 +5,11 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.1.3] - 2026-08-10
+
+### Fixed
+- **v2.1.2's release build failed on the Windows CI leg.** `TestApplyHostsOverride_*` call `applyHostsOverride()`, which correctly refuses unconditionally on non-Linux — but the tests didn't skip themselves there, so `go test ./...` failed on the Windows build job. v2.1.2's actual code (the mDNS local-discovery feature itself) was never broken; only that release's CI run was. Tests now skip cleanly on non-Linux with a clear reason.
+
 ## [v2.1.2] - 2026-08-10
 
 ### Added
