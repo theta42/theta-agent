@@ -4,6 +4,10 @@ name: build-windows
 # installer; signs them with Azure Trusted Signing; generates SHA256SUMS; and
 # publishes the artifacts to the SSO resource tree (DESIGN-WINDOWS.md §9).
 #
+# The build itself is driven by scripts/setup-build-env.ps1 (idempotent dev/build
+# environment setup: pinned Go version, per-user Inno Setup, checksum-verified
+# vendor assets). The workflow only adds signing and publishing on top.
+#
 # Signing requires GitHub OIDC federation to Azure. If the Azure secrets are
 # not configured the workflow still builds and attaches unsigned artifacts.
 
@@ -29,56 +33,20 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run unit tests
-        shell: bash
-        run: go test ./...
-
-      - name: Build agent, tray, helper
-        shell: bash
-        run: |
-          mkdir -p dist
-          LDFLAGS="-s -w"
-          for arch in amd64 arm64; do
-            GOOS=windows GOARCH=$arch go build -ldflags="$LDFLAGS" -o dist/theta-agent-windows-$arch.exe .
-            GOOS=windows GOARCH=$arch go build -ldflags="$LDFLAGS" -o dist/theta-agent-tray-windows-$arch.exe ./cmd/theta-agent-tray/
-            GOOS=windows GOARCH=$arch go build -ldflags="$LDFLAGS" -o dist/theta-agent-helper-windows-$arch.exe ./cmd/theta-agent-helper/
-          done
-
-      - name: Fetch vendored, vendor-signed dependencies
+      # One idempotent step sets up Inno Setup + fetches/verifies the vendor
+      # assets and builds binaries + installer + runs the test suite.
+      - name: Setup build environment and build
         shell: pwsh
         run: |
-          $vendor = "installer/windows/vendor"
-          New-Item -ItemType Directory -Force -Path $vendor | Out-Null
-          # Pinned by sha256; WireGuard MSI and VC++ redist are Microsoft/vendor signed.
-          $assets = @(
-            @{ url = "https://download.wireguard.com/windows-client/wireguard-amd64-0.5.3.msi"; out = "wireguard-amd64-0.5.3.msi"; sha = "PINNED_WIREGUARD_SHA256" },
-            @{ url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"; out = "vc_redist.x64.exe"; sha = "PINNED_VC_REDIST_SHA256" }
-          )
-          foreach ($a in $assets) {
-            $dest = Join-Path $vendor $a.out
-            Invoke-WebRequest -Uri $a.url -OutFile $dest
-            $h = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
-            if ($h -ne $a.sha) { throw "sha256 mismatch for $($a.out): $h" }
-            Set-Content -Path "$dest.sha256" -Value $h
-          }
-          # OpenCredential (pGina fork) release — swap PINNED below for a real release URL.
-          $oc = "https://github.com/pedropablobm/OpenCredential/releases/latest/download/OpenCredential.zip"
-          Invoke-WebRequest -Uri $oc -OutFile (Join-Path $vendor "opencredential.zip")
-          Expand-Archive -Path (Join-Path $vendor "opencredential.zip") -DestinationPath (Join-Path $vendor "OpenCredential")
-
-      - name: Compile Inno installer
-        shell: pwsh
-        run: |
-          choco install innosetup -y --no-progress
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
-          & $iscc "/DMyAppVersion=${{ env.VERSION }}" installer/windows/installer.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-build-env.ps1 -SkipGo -Build -CI
+          if ($LASTEXITCODE -ne 0) { throw "setup-build-env failed" }
 
       - name: Generate SHA256SUMS
         shell: pwsh
         run: |
-          Get-ChildItem dist -File | Where-Object { $_.Extension -in ".exe",".msi" -or $_.Name -like "*setup*" } | ForEach-Object {
+          Get-ChildItem dist -File | Where-Object {
+            $_.Name -match 'windows-.*\.exe$|setup\.exe$' -or $_.Name -eq 'SHA256SUMS'
+          } | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower(), $_.Name
           } | Set-Content -Path dist/SHA256SUMS
 

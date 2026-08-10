@@ -183,12 +183,18 @@ One `.exe`, built on a connected machine, runnable on an air-gapped one. Bundles
 
 - `theta-agent-windows-amd64.exe` (+ arm64) and `theta-agent-tray-windows-amd64.exe`
 - `theta-agent-helper.exe` (desktop-control helper)
-- OpenCredential CP binaries + **VC++ v14 redistributable** (its native runtime; .NET
+- OpenCredential CP installer + **VC++ v14 redistributable** (its native runtime; .NET
   Framework 4.8 is built into Windows 10/11 so needs no bundle)
 - The official, vendor-signed WireGuard for Windows client (signed drivers install
   offline without signature phone-home)
 - OpenCredential's pre-seeded LDAP plugin config
 - Agent `agent.yml` template + self-signed CP cert installed into the machine trusted root
+
+The build environment is bootstrapped idempotently by
+`scripts/setup-build-env.ps1` (pinned Go version, per-user Inno Setup install, and
+vendor assets fetched into `installer/windows/vendor/` — verified against the pinned
+sha256 in `installer/windows/vendor-manifest.json`). The CI workflow calls the same
+script, so a local build and CI/CD cannot drift.
 
 Install-time behavior:
 

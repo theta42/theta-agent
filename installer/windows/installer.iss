@@ -58,15 +58,14 @@ Source: "{#AgentDir}\theta-agent-windows-amd64.exe"; DestDir: "{app}"; Flags: ig
 Source: "{#AgentDir}\theta-agent-tray-windows-amd64.exe"; DestDir: "{app}\tray"; Flags: ignoreversion
 Source: "{#AgentDir}\theta-agent-helper-windows-amd64.exe"; DestDir: "{app}"; Flags: ignoreversion
 
-; WireGuard for Windows — official, vendor-signed MSI. Install happens offline
-; (the driver is signed; no signature phone-home).
+; WireGuard for Windows — official, vendor-signed MSI. Installs offline (the
+; driver is signed; no signature phone-home).
 Source: "{#VendorDir}\wireguard-amd64-0.5.3.msi"; DestDir: "{app}\vendor"; Flags: ignoreversion
-Source: "{#VendorDir}\wireguard-amd64-0.5.3.msi.sha256"; DestDir: "{app}\vendor"; Flags: ignoreversion
 
-; OpenCredential credential provider (BSD-3 pGina fork) + VC++ runtime it needs.
-Source: "{#VendorDir}\OpenCredential\*"; DestDir: "{app}\OpenCredential"; Flags: ignoreversion recursesubdirs
+; OpenCredential credential provider installer (BSD-3 pGina fork) + the VC++
+; runtime it needs. Both install silently at [Run].
+Source: "{#VendorDir}\OpenCredentialInstaller-1.0.0.0.exe"; DestDir: "{app}\vendor"; Flags: ignoreversion
 Source: "{#VendorDir}\vc_redist.x64.exe"; DestDir: "{app}\vendor"; Flags: ignoreversion
-Source: "{#VendorDir}\vc_redist.x64.exe.sha256"; DestDir: "{app}\vendor"; Flags: ignoreversion
 
 [Registry]
 ; Start the tray for every interactive logon.
@@ -75,23 +74,33 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; VC++ v14 runtime (OpenCredential native deps).
 Filename: "{app}\vendor\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing VC++ runtime..."; Flags: runhidden waituntilterminated
+; OpenCredential credential provider — must be registered before logon.
+Filename: "{app}\vendor\OpenCredentialInstaller-1.0.0.0.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"; StatusMsg: "Installing OpenCredential credential provider..."; Flags: runhidden waituntilterminated
 ; WireGuard for Windows client.
 Filename: "msiexec.exe"; Parameters: "/i ""{app}\vendor\wireguard-amd64-0.5.3.msi"" /qn /norestart"; StatusMsg: "Installing WireGuard client..."; Flags: runhidden waituntilterminated
 ; Register the agent as a SYSTEM auto-start service.
 Filename: "{app}\{#MyAppExeName}"; Parameters: "install-service"; StatusMsg: "Registering theta-agent service..."; Flags: runhidden waituntilterminated
-; Credential provider registration + agent.yml are handled in [Code] so we can
-; feed SERVER_URL/JOIN_KEY in and sequence the CP install before logon.
-Filename: "{app}\OpenCredential\OpenCredentialInstaller.exe"; Parameters: "/S"; StatusMsg: "Installing OpenCredential credential provider..."; Flags: runhidden waituntilterminated skipifsilent
 
 [Code]
 var
   ServerURL: String;
   JoinKey: String;
 
+// Reads a custom setup command-line parameter (e.g. /SERVER_URL=https://...).
+// {param:...} raises when the parameter is absent, so the exception becomes "".
+function GetCmdParam(const Name: String): String;
+begin
+  try
+    Result := ExpandConstant('{param:' + Name + '}');
+  except
+    Result := '';
+  end;
+end;
+
 function InitializeSetup(): Boolean;
 begin
-  ServerURL := GetCmdLineParam('/SERVER_URL', '');
-  JoinKey := GetCmdLineParam('/JOIN_KEY', '');
+  ServerURL := GetCmdParam('SERVER_URL');
+  JoinKey := GetCmdParam('JOIN_KEY');
   Result := True;
 end;
 
