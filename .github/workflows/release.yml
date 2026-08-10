@@ -107,14 +107,10 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate SHA256SUMS
-        shell: bash
-        run: |
-          cd dist
-          sha256sum * | tee SHA256SUMS
-
-      # Optional Azure Trusted Signing (OIDC federation). Runs only when the
-      # Azure secrets are configured; otherwise the artifacts ship unsigned.
+      # Optional Azure Trusted Signing (OIDC federation). Signs only Windows PE
+      # files (Authenticode applies to PE/MSI; the linux/darwin binaries are
+      # already self-identifying). Runs only when the Azure secrets exist;
+      # otherwise the artifacts ship unsigned.
       - name: Sign with Azure Trusted Signing
         if: env.AZURE_TENANT_ID != ''
         uses: azure/login@v2
@@ -130,7 +126,15 @@ jobs:
           endpoint: ${{ secrets.AZURE_TS_ENDPOINT }}
           trusted-signing-account-name: ${{ secrets.AZURE_TS_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_TS_CERT_PROFILE }}
-          files: dist/**
+          files: |
+            dist/*.exe
+
+      # Hash AFTER signing so SHA256SUMS matches what ships.
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
