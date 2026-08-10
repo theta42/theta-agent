@@ -15,7 +15,9 @@ import (
 )
 
 type linuxPlatformOps struct {
-	exec Executor
+	exec       Executor
+	tunnelName string // WireGuard interface/tunnel name
+	confPath   string // persisted peer config path
 }
 
 func (p *linuxPlatformOps) Reboot() ([]byte, error) {
@@ -155,4 +157,59 @@ func (p *linuxPlatformOps) ApplyUpdate(downloadURL, checksum string) error {
 
 func (p *linuxPlatformOps) SelfRestart() {
 	os.Exit(0)
+}
+
+// ApplyWireGuard persists the peer config and brings the tunnel up with
+// wg-quick (wg-quick reads /etc/wireguard/<name>.conf by interface name).
+func (p *linuxPlatformOps) ApplyWireGuard(conf string) error {
+	if err := os.MkdirAll(filepath.Dir(p.confPath), 0700); err != nil {
+		return fmt.Errorf("wireguard: create config dir: %w", err)
+	}
+	if err := os.WriteFile(p.confPath, []byte(conf), 0600); err != nil {
+		return fmt.Errorf("wireguard: persist config: %w", err)
+	}
+	out, err := p.exec.Execute("wg-quick", "up", p.tunnelName)
+	if err != nil {
+		return fmt.Errorf("wireguard: wg-quick up %s: %v: %s", p.tunnelName, err, out)
+	}
+	return nil
+}
+
+func (p *linuxPlatformOps) RemoveWireGuard() error {
+	out, err := p.exec.Execute("wg-quick", "down", p.tunnelName)
+	if err != nil {
+		return fmt.Errorf("wireguard: wg-quick down %s: %v: %s", p.tunnelName, err, out)
+	}
+	return nil
+}
+
+// WireGuardState reports whether the tunnel interface exists.
+func (p *linuxPlatformOps) WireGuardState() bool {
+	out, err := p.exec.Execute("ip", "link", "show", p.tunnelName)
+	return err == nil && len(out) > 0
+}
+
+// ConnectWireGuard brings the persisted config up unless already active.
+func (p *linuxPlatformOps) ConnectWireGuard() error {
+	if p.WireGuardState() {
+		return nil
+	}
+	conf, err := os.ReadFile(p.confPath)
+	if err != nil {
+		return fmt.Errorf("wireguard: no persisted config at %s: %w", p.confPath, err)
+	}
+	return p.ApplyWireGuard(string(conf))
+}
+
+func (p *linuxPlatformOps) DisconnectWireGuard() error {
+	if !p.WireGuardState() {
+		return nil
+	}
+	return p.RemoveWireGuard()
+}
+
+// ApplyIAM is the Linux node-identity engine (sudoers.d, SSH keys, PAM access,
+// SSSD cache flush + session kill).
+func (p *linuxPlatformOps) ApplyIAM(payload IAMPayload) error {
+	return applyIAM(payload, p.exec)
 }

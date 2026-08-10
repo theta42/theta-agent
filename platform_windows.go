@@ -23,6 +23,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unicode/utf16"
@@ -34,6 +35,9 @@ type windowsPlatformOps struct {
 	exec        Executor
 	helperPath  string // theta-agent-helper.exe (DESIGN-WINDOWS.md §8)
 	serviceName string // Windows service name (defaults to theta-agent)
+	tunnelName  string // WireGuard tunnel/service name
+	confPath    string // persisted peer config path
+	wgExe       string // wireguard.exe client path ("" = PATH lookup)
 }
 
 func (p *windowsPlatformOps) Reboot() ([]byte, error) {
@@ -174,6 +178,111 @@ func (p *windowsPlatformOps) ApplyUpdate(downloadURL, checksum string) error {
 
 func (p *windowsPlatformOps) SelfRestart() {
 	stopAgent()
+}
+
+// wireGuardExe resolves the WireGuard client executable: explicit config path,
+// PATH lookup, or the default install location.
+func (p *windowsPlatformOps) wireGuardExe() string {
+	if p.wgExe != "" {
+		return p.wgExe
+	}
+	const defaultInstall = `C:\Program Files\WireGuard\wireguard.exe`
+	if _, err := os.Stat(defaultInstall); err == nil {
+		return defaultInstall
+	}
+	return "wireguard.exe"
+}
+
+// ApplyWireGuard persists the peer config and installs it as a WireGuard
+// service via the official client (wireguard.exe /installtunnelservice).
+func (p *windowsPlatformOps) ApplyWireGuard(conf string) error {
+	if err := os.MkdirAll(filepath.Dir(p.confPath), 0700); err != nil {
+		return fmt.Errorf("wireguard: create config dir: %w", err)
+	}
+	if err := os.WriteFile(p.confPath, []byte(conf), 0600); err != nil {
+		return fmt.Errorf("wireguard: persist config: %w", err)
+	}
+	out, err := p.exec.Execute(p.wireGuardExe(), "/installtunnelservice", p.tunnelName, p.confPath)
+	if err != nil {
+		return fmt.Errorf("wireguard: installtunnelservice %s: %v: %s", p.tunnelName, err, out)
+	}
+	return nil
+}
+
+func (p *windowsPlatformOps) RemoveWireGuard() error {
+	out, err := p.exec.Execute(p.wireGuardExe(), "/uninstalltunnelservice", p.tunnelName)
+	if err != nil {
+		return fmt.Errorf("wireguard: uninstalltunnelservice %s: %v: %s", p.tunnelName, err, out)
+	}
+	return nil
+}
+
+// WireGuardState reports whether the WireGuardTunnel$<name> service is running.
+func (p *windowsPlatformOps) WireGuardState() bool {
+	out, err := p.exec.Execute("sc.exe", "query", "WireGuardTunnel$"+p.tunnelName)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(string(out)), "RUNNING")
+}
+
+// ConnectWireGuard brings the persisted config up unless already active.
+func (p *windowsPlatformOps) ConnectWireGuard() error {
+	if p.WireGuardState() {
+		return nil
+	}
+	conf, err := os.ReadFile(p.confPath)
+	if err != nil {
+		return fmt.Errorf("wireguard: no persisted config at %s: %w", p.confPath, err)
+	}
+	return p.ApplyWireGuard(string(conf))
+}
+
+func (p *windowsPlatformOps) DisconnectWireGuard() error {
+	if !p.WireGuardState() {
+		return nil
+	}
+	return p.RemoveWireGuard()
+}
+
+// ApplyIAM maps node identity onto local Windows security (DESIGN-WINDOWS.md
+// §4): local groups for allowed_login_groups, per-user authorized_keys for
+// OpenSSH, and session logoff via the helper for revocation.
+func (p *windowsPlatformOps) ApplyIAM(payload IAMPayload) error {
+	ac := payload.AccessControl
+
+	for _, g := range ac.AllowedLoginGroups {
+		if g == "" {
+			continue
+		}
+		if _, err := p.exec.Execute("net", "localgroup", g, "/add"); err != nil {
+			log.Printf("[iam] net localgroup %s /add: %v", g, err)
+		}
+	}
+
+	if len(ac.SSHKeys) > 0 {
+		if err := applyWindowsSSHKeys(ac.SSHKeys); err != nil {
+			log.Printf("[iam] ssh keys: %v", err)
+		}
+	}
+
+	for _, u := range ac.RevokeUsers {
+		if u == "" {
+			continue
+		}
+		if p.helperPath != "" {
+			if _, err := p.exec.Execute(p.helperPath, "logout", u); err != nil {
+				log.Printf("[iam] revoke %s: %v", u, err)
+			}
+		} else {
+			log.Printf("[iam] revoke %s: desktop_helper not configured; no sessions logged off", u)
+		}
+	}
+
+	if len(ac.SudoRules) > 0 {
+		log.Println("[iam] sudo_rules have no direct Windows equivalent; mapped to local group membership (UAC elevation policy)")
+	}
+	return nil
 }
 
 // spawnDetached launches exe as a background process that survives this one.

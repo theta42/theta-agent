@@ -111,6 +111,8 @@ var (
 	mAutoVPN    *systray.MenuItem
 	mVPNToggle  *systray.MenuItem
 	mSeparator  *systray.MenuItem
+	mOpenConfig *systray.MenuItem
+	mReinit     *systray.MenuItem
 	mQuit       *systray.MenuItem
 
 	currentStatus TrayStatus
@@ -130,7 +132,9 @@ func onReady() {
 	mAutoVPN   = systray.AddMenuItemCheckbox("Auto-connect VPN when away", "Automatically connect to home via WireGuard when not on the home LAN", false)
 	mVPNToggle = systray.AddMenuItem("Connect VPN", "Manually connect or disconnect the WireGuard tunnel")
 	systray.AddSeparator()
-	mQuit = systray.AddMenuItem("Quit Tray", "Exit the tray icon (daemon keeps running)")
+	mOpenConfig = systray.AddMenuItem("Open Config", "Open agent.yml in the default editor")
+	mReinit     = systray.AddMenuItem("Clear enrollment…", "Blank auth_token/public_key so the agent re-enrolls on reconnect")
+	mQuit       = systray.AddMenuItem("Quit Tray", "Exit the tray icon (daemon keeps running)")
 
 	// ── IPC loop — connect with retry ──
 	go connectWithRetry()
@@ -155,6 +159,12 @@ func onReady() {
 				} else {
 					sendCmd(TrayCommand{Command: "vpn_connect"})
 				}
+
+			case <-mOpenConfig.ClickedCh:
+				sendCmd(TrayCommand{Command: "open_config"})
+
+			case <-mReinit.ClickedCh:
+				sendCmd(TrayCommand{Command: "reinit"})
 
 			case <-mQuit.ClickedCh:
 				systray.Quit()

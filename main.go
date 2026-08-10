@@ -23,6 +23,10 @@ var (
 	agentStopCh   = make(chan struct{})
 )
 
+// currentCM lets the tray IPC server persist preferences (auto_vpn) and reset
+// enrollment into the live config file. Set once in runAgent.
+var currentCM *ConfigManager
+
 // stopAgent signals the running agent to shut down. Idempotent.
 func stopAgent() {
 	agentStopOnce.Do(func() { close(agentStopCh) })
@@ -71,6 +75,10 @@ func runAgent() {
 	// dispatcher runs behind.
 	exec := &SystemExecutor{}
 	defaultPlatformOps = NewPlatformOps(cfg, exec)
+	currentCM = cm
+
+	// Seed the auto-VPN preference from disk; the tray checkbox updates it.
+	SetAutoVPN(cfg.AutoVPN)
 
 	// Tray IPC server — desktop tray connects here for status updates.
 	go globalTrayServer.Start()

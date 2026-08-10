@@ -45,6 +45,19 @@ type PlatformOps interface {
 	// SelfRestart terminates the agent so a staged update takes effect. Linux
 	// exits; the Windows service handler stops itself (the helper restarts it).
 	SelfRestart()
+
+	// WireGuard mesh client (DESIGN-WINDOWS.md §5). ApplyWireGuard persists and
+	// brings up a peer tunnel; RemoveWireGuard tears it down; WireGuardState
+	// reports whether the tunnel is up; ConnectWireGuard/DisconnectWireGuard
+	// drive the tunnel from the persisted config (auto-VPN).
+	ApplyWireGuard(conf string) error
+	RemoveWireGuard() error
+	WireGuardState() (active bool)
+	ConnectWireGuard() error
+	DisconnectWireGuard() error
+
+	// ApplyIAM applies a verified node identity payload (DESIGN.md §6).
+	ApplyIAM(payload IAMPayload) error
 }
 
 // defaultPlatformOps is the ops implementation the command dispatcher uses.

@@ -45,3 +45,13 @@ func defaultLdapSocketPath() string {
 func windowsTraySocketPath() string {
 	return filepath.Join(windowsDataDir(), "tray.sock")
 }
+
+// defaultWireGuardConfPath returns where the pushed peer config is persisted.
+// Linux uses /etc/wireguard so wg-quick finds it by interface name; Windows
+// keeps it in the shared data dir next to the tray socket.
+func defaultWireGuardConfPath(name string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(windowsDataDir(), "wg", name+".conf")
+	}
+	return filepath.Join("/etc/wireguard", name+".conf")
+}

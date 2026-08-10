@@ -524,12 +524,53 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		log.Printf("Applying IAM revision %d for node %s...", payload.Revision, payload.NodeID)
-		if err := applyIAM(payload, exec); err != nil {
+		if err := defaultPlatformOps.ApplyIAM(payload); err != nil {
 			log.Printf("IAM apply failed: %v", err)
 			sendResponse("error", fmt.Sprintf("iam apply failed: %v", err))
 			return
 		}
 		sendResponse("ok", "iam applied")
+	case "wireguard_apply":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.WireGuard {
+			log.Println("WireGuard apply rejected: capability disabled in agent.yml")
+			sendResponse("error", "wireguard capability disabled")
+			return
+		}
+		conf, _ := msg.Payload["config"].(string)
+		if conf == "" {
+			sendResponse("error", "missing wireguard config")
+			return
+		}
+		log.Printf("Applying WireGuard peer config...")
+		if err := defaultPlatformOps.ApplyWireGuard(conf); err != nil {
+			log.Printf("WireGuard apply failed: %v", err)
+			sendResponse("error", fmt.Sprintf("wireguard apply failed: %v", err))
+			return
+		}
+		SetVPNActive(true)
+		sendResponse("ok", "wireguard applied")
+	case "wireguard_remove":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.WireGuard {
+			log.Println("WireGuard remove rejected: capability disabled in agent.yml")
+			sendResponse("error", "wireguard capability disabled")
+			return
+		}
+		log.Printf("Removing WireGuard tunnel...")
+		if err := defaultPlatformOps.RemoveWireGuard(); err != nil {
+			log.Printf("WireGuard remove failed: %v", err)
+			sendResponse("error", fmt.Sprintf("wireguard remove failed: %v", err))
+			return
+		}
+		SetVPNActive(false)
+		sendResponse("ok", "wireguard removed")
 	case "arbitrary_bash":
 		if !verifySignature(cfg, msg) {
 			sendResponse("error", "signature verification failed")
