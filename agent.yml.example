@@ -37,6 +37,14 @@ ldap_socket: "/run/theta/ldap.sock"
 # directory WebSocket is up. The tray checkbox persists here too.
 auto_vpn: false
 
+# mDNS local-discovery (MULTI_SITE_SPEC.md Appendix B): when a
+# theta-gateway/theta-proxy on the local network segment announces itself as
+# fronting this agent's server_url host, skip the relay/WAN path and talk to
+# it directly. Off by default -- it changes host name resolution on this
+# machine. Linux only for now; Windows/macOS need their own platform-native
+# support before this does anything there.
+prefer_local_directory: false
+
 # Windows-specific (DESIGN-WINDOWS.md ??11). Ignored on Linux.
 service_name: "theta-agent"            # Windows service name
 desktop_helper: ""                     # theta-agent-helper.exe path (session-0 ops)
