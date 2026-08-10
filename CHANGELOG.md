@@ -5,6 +5,35 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.1.2] - 2026-08-10
+
+### Added
+- **Linux mDNS local-discovery** (`local_discovery.go`, `hosts_override.go`) — when a `theta-gateway`/`theta-proxy` on the local network segment announces itself as fronting this agent's `server_url` host, the agent skips the relay/WAN path and talks to it directly. Opt-in via `prefer_local_directory` (off by default, since it changes host name resolution). Presence/absence of the mDNS announcement is the "on this LAN or not" signal — no separate network detection needed. Never touches TLS/certificate validation: this only ever changes *where* the agent connects, never *whether* it trusts what answers, so a spoofed rogue announcement produces a TLS failure, not a silent MITM.
+- Companion piece to `theta-gateway`'s new mDNS announcer (`services/mdns_announce.js`, `theta-gateway` v2.1.0).
+
+### Fixed (found via real two-container testing over live multicast, not by inspection)
+- The naive `mdns.Lookup()` call requests both IPv4 and IPv6 by default; the underlying client sends the v4 query (which got a real, valid response, confirmed with a packet capture) and then the v6 query, and if the v6 send fails — no IPv6 route, common on plain v4 hosts/containers — the whole `Query()` call returns that error synchronously before the response-listening loop ever starts, silently discarding the already-received v4 response. Fixed by disabling IPv6 querying explicitly rather than depending on IPv6 being configured.
+- The hosts-file writer used write-tmp-then-rename for atomicity; `/etc/hosts` is frequently a bind mount (every container runtime does this), and `rename()` onto a bind-mounted file fails with `EBUSY` — you cannot atomically replace a mountpoint. Switched to truncate-and-rewrite in place.
+
+Windows/macOS local-discovery remain unbuilt — needs platform-native testing (hosts-file vs. stub-resolver tradeoff, elevation, DNS-cache behavior per OS) that wasn't available for this pass. See `theta-suite`'s `docs/AGENT_LOCAL_DISCOVERY_SPEC.md`.
+
+## [v2.1.1] - 2026-08-10 (undocumented at the time; recorded retroactively)
+
+### Fixed
+- **Windows silent install** kept an empty `server_url`; the tray now actually starts after a silent install; self-update now uses GitHub releases instead of the prior mechanism.
+
+## [v2.1.0] - 2026-08-10 (undocumented at the time; recorded retroactively)
+
+### Added
+- **Windows agent**: platform ops, Windows service wrapper, desktop helper, air-gap paths.
+- **Windows WireGuard client**: auto-VPN (connect when away from home), IAM enrichment, tray integration.
+- **Windows installer**: idempotent setup script, verified vendor manifest, GUI tray, Theta Directory branding, visible URL/join-key fields, service autostart.
+- **CI**: builds every platform's binaries on GitHub and attaches them to releases; Windows PE files are signed (hash computed after signing, not before).
+
+### Fixed
+- Tray icon now loads correctly on Windows (PNG→ICO conversion was missing proper BMP entries).
+- Tray companion supports Windows socket paths and always runs on Windows.
+
 ## [v2.0.1] - 2026-08-09
 
 ### Fixed
