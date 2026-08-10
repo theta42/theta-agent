@@ -245,6 +245,14 @@ func TestHandleCommand(t *testing.T) {
 			mockConn := &MockConn{}
 			mockExec := &MockExecutor{}
 			cm := &ConfigManager{current: tc.cfg}
+
+			// The dispatch tests assert the exact command lines the Linux
+			// executor produces; pin the platform ops so they behave the same
+			// on any CI host (Windows included).
+			prevOps := defaultPlatformOps
+			defaultPlatformOps = &linuxPlatformOps{exec: mockExec}
+			defer func() { defaultPlatformOps = prevOps }()
+
 			msg := tc.msg
 			if tc.signed {
 				msg.Payload = sign(t, msg.Payload)

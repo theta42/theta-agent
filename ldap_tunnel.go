@@ -39,19 +39,22 @@ func newLdapTunnel(send func(WSMessage) error) *ldapTunnel {
 
 // start binds both unix socket and TCP loopback, accepting connections until stopCh closes.
 func (t *ldapTunnel) start(socketPath string, stopCh <-chan struct{}) {
-	os.Remove(socketPath)
-	if dir := filepath.Dir(socketPath); dir != "." && dir != "/" {
-		os.MkdirAll(dir, 0755)
-	}
+	// 1. UNIX Domain Socket Listener. Windows passes an empty path and relies
+	// on the TCP loopback listener below.
+	if socketPath != "" {
+		os.Remove(socketPath)
+		if dir := filepath.Dir(socketPath); dir != "." && dir != "/" {
+			os.MkdirAll(dir, 0755)
+		}
 
-	// 1. UNIX Domain Socket Listener
-	lnUnix, err := net.Listen("unix", socketPath)
-	if err == nil {
-		os.Chmod(socketPath, 0666)
-		log.Printf("LDAP tunnel: listening on unix socket %s", socketPath)
-		go t.acceptLoop(lnUnix, stopCh)
-	} else {
-		log.Printf("LDAP tunnel: cannot bind unix socket %s: %v", socketPath, err)
+		lnUnix, err := net.Listen("unix", socketPath)
+		if err == nil {
+			os.Chmod(socketPath, 0666)
+			log.Printf("LDAP tunnel: listening on unix socket %s", socketPath)
+			go t.acceptLoop(lnUnix, stopCh)
+		} else {
+			log.Printf("LDAP tunnel: cannot bind unix socket %s: %v", socketPath, err)
+		}
 	}
 
 	// 2. TCP Loopback Listener (127.0.0.1:389 with fallback to 127.0.0.1:3890)

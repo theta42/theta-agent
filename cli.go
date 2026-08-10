@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -31,6 +32,12 @@ func handleCLI(args []string) bool {
 	case "--reinitialize", "reinitialize", "--reinit", "reinit":
 		runReinitialize(args[1:])
 		return true
+	case "install-service":
+		handleServiceCommand(args[1:])
+		return true
+	case "remove-service", "uninstall-service":
+		handleServiceCommand(append([]string{"remove"}, args[1:]...))
+		return true
 	case "--version", "version", "-v":
 		fmt.Println("Theta Agent " + AgentVersion)
 		return true
@@ -50,6 +57,8 @@ func printUsage() {
 	fmt.Println("  theta-agent get-secrets [flags]     Fetch all host/resource secrets (flags: --json, --env)")
 	fmt.Println("  theta-agent update                  Self-update binary from SSO Manager")
 	fmt.Println("  theta-agent reinitialize [flags]   Reset enrollment credentials & re-register")
+	fmt.Println("  theta-agent install-service        (Windows) register the agent as a service")
+	fmt.Println("  theta-agent remove-service         (Windows) unregister the agent service")
 	fmt.Println("  theta-agent version                 Show version info")
 	fmt.Println()
 	fmt.Println("Reinitialize Flags:")
@@ -58,7 +67,7 @@ func printUsage() {
 }
 
 func runSelfUpdate(args []string) {
-	configPath := "/etc/theta42/agent.yml"
+	configPath := defaultConfigPath()
 	cm, err := NewConfigManager(configPath)
 	if err != nil {
 		log.Fatalf("[!] Update failed: cannot read config from %s: %v", configPath, err)
@@ -69,7 +78,16 @@ func runSelfUpdate(args []string) {
 		log.Fatalf("[!] Update failed: server_url is empty in %s", configPath)
 	}
 
-	downloadURL := fmt.Sprintf("%s/resources/theta-agent/theta-agent-linux-amd64", serverURL)
+	arch := "amd64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	artifact := fmt.Sprintf("theta-agent-%s-%s%s", runtime.GOOS, arch, ext)
+	downloadURL := fmt.Sprintf("%s/resources/theta-agent/%s", serverURL, artifact)
 	log.Printf("[+] Downloading latest Theta Agent binary from %s...", downloadURL)
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -106,7 +124,7 @@ func runSelfUpdate(args []string) {
 }
 
 func runReinitialize(args []string) {
-	configPath := "/etc/theta42/agent.yml"
+	configPath := defaultConfigPath()
 	joinKey := ""
 	for i := 0; i < len(args); i++ {
 		if (args[i] == "--join-key" || args[i] == "-j") && i+1 < len(args) {
@@ -146,6 +164,12 @@ func runReinitialize(args []string) {
 
 func restartAffectedServices(exec Executor) {
 	log.Printf("[+] Restarting theta-agent service...")
+	if runtime.GOOS == "windows" {
+		// sc.exe has no one-shot restart.
+		_, _ = exec.Execute("sc", "stop", "theta-agent")
+		_, _ = exec.Execute("sc", "start", "theta-agent")
+		return
+	}
 	_, _ = exec.Execute("systemctl", "restart", "theta-agent")
 
 	if _, err := exec.Execute("systemctl", "is-active", "sssd"); err == nil {
@@ -235,7 +259,7 @@ func runGetSecrets(args []string) {
 }
 
 func fetchAgentSecrets() (map[string]string, error) {
-	configPath := "/etc/theta42/agent.yml"
+	configPath := defaultConfigPath()
 	cm, err := NewConfigManager(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config %s: %w", configPath, err)

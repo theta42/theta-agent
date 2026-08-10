@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -37,6 +38,7 @@ func (ts *trayServer) Start() {
 
 	for _, p := range TraySocketPaths {
 		os.Remove(p)
+		os.MkdirAll(filepath.Dir(p), 0755) //nolint:errcheck
 		l, err = net.Listen("unix", p)
 		if err == nil {
 			boundPath = p

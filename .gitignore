@@ -4,3 +4,5 @@ theta-agent-*
 dist/
 *.exe
 agent.yml
+!cmd/theta-agent-helper/
+!cmd/theta-agent-helper/main.go

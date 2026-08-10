@@ -425,7 +425,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.0.0"
+const AgentVersion = "v2.1.0"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
@@ -446,7 +446,10 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 	cpuDet := collectCPUDetails()
 	loggedUsers := collectLoggedUsers()
 
-	pubIP := getPublicIP()
+	pubIP := ""
+	if cfg.DetectPublicIP() {
+		pubIP = getPublicIP()
+	}
 
 	diskTotalGB := 0.0
 	for _, d := range disks {

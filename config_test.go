@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -155,10 +156,13 @@ capabilities:
 		t.Errorf("Credential() should prefer the issued token, got %q", cm.Get().Credential())
 	}
 
-	// file must stay 0600 -- it now holds a credential
-	fi, _ := os.Stat(path)
-	if fi.Mode().Perm() != 0600 {
-		t.Errorf("expected mode 0600, got %o", fi.Mode().Perm())
+	// file must stay 0600 -- it now holds a credential. POSIX-only: Windows has
+	// no mode bits (0666 is reported regardless) and relies on ACLs instead.
+	if runtime.GOOS != "windows" {
+		fi, _ := os.Stat(path)
+		if fi.Mode().Perm() != 0600 {
+			t.Errorf("expected mode 0600, got %o", fi.Mode().Perm())
+		}
 	}
 }
 
