@@ -663,6 +663,6 @@ func pushDiscovery(c MessageWriter, cfg *Config) {
 	if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
 		log.Printf("Failed to send discovery data: %v", err)
 	} else {
-		log.Println("Discovery data pushed to SSO Manager.")
+		log.Println("Discovery data pushed to Theta Directory.")
 	}
 }

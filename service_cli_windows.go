@@ -59,7 +59,13 @@ func installService() {
 		logFatal("cannot create service: %v", err)
 	}
 	defer s.Close()
-	fmt.Printf("[+] Registered theta-agent service (%s)\n", filepath.Base(exe))
+
+	// Start it immediately so the daemon binds the tray IPC socket and the
+	// credential provider is live without waiting for a reboot.
+	if err := s.Start(); err != nil {
+		logFatal("cannot start service: %v", err)
+	}
+	fmt.Printf("[+] Registered and started theta-agent service (%s)\n", filepath.Base(exe))
 }
 
 func removeService() {

@@ -146,7 +146,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			// credential every 5s just floods the SSO and its audit log
 			// forever, so back off hard and say plainly what is wrong.
 			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-				log.Printf("Server rejected our token (HTTP %d). Enroll this agent in the SSO Directory and put the issued token in agent.yml. Retrying in %s.", resp.StatusCode, authRetryInterval)
+				log.Printf("Server rejected our token (HTTP %d). Enroll this agent in the Theta Directory and put the issued token in agent.yml. Retrying in %s.", resp.StatusCode, authRetryInterval)
 				time.Sleep(authRetryInterval)
 				continue
 			}
@@ -155,7 +155,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			continue
 		}
 
-		log.Println("Successfully connected to SSO Manager.")
+		log.Println("Successfully connected to Theta Directory.")
 		wsConnected.Store(true)
 
 		stopCh := make(chan struct{})
@@ -213,7 +213,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				// than at Dial.
 				if websocket.IsCloseError(err, closeUnauthorized, closeRevoked, closeTokenRotated) {
 					authRejected = true
-					log.Printf("Server closed the connection: %v. This agent's token is not valid for that SSO — re-enroll it and update agent.yml.", err)
+					log.Printf("Server closed the connection: %v. This agent's token is not valid for that Theta Directory — re-enroll it and update agent.yml.", err)
 				} else {
 					log.Println("WebSocket read error:", err)
 				}
@@ -345,7 +345,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 				log.Printf("Enrolled, but could not persist credentials: %v", err)
 				log.Printf("This agent will re-enroll on every reconnect until %s is writable.", cm.configPath)
 			} else {
-				log.Printf("Enrolled with the SSO. Credentials written to %s; the join key is no longer needed.", cm.configPath)
+				log.Printf("Enrolled with Theta Directory. Credentials written to %s; the join key is no longer needed.", cm.configPath)
 			}
 			sendResponse("ok", "enrollment stored")
 			return

@@ -55,7 +55,7 @@ func printUsage() {
 	fmt.Println("  theta-agent                         Run agent daemon in foreground")
 	fmt.Println("  theta-agent get-secret <key>        Fetch single secret value from OpenBao")
 	fmt.Println("  theta-agent get-secrets [flags]     Fetch all host/resource secrets (flags: --json, --env)")
-	fmt.Println("  theta-agent update                  Self-update binary from SSO Manager")
+	fmt.Println("  theta-agent update                  Self-update binary from Theta Directory")
 	fmt.Println("  theta-agent reinitialize [flags]   Reset enrollment credentials & re-register")
 	fmt.Println("  theta-agent install-service        (Windows) register the agent as a service")
 	fmt.Println("  theta-agent remove-service         (Windows) unregister the agent service")

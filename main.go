@@ -63,7 +63,7 @@ func runAgent() {
 	}
 	cfg := cm.Get()
 
-	log.Printf("Connecting to SSO Manager at %s", cfg.ServerURL)
+	log.Printf("Connecting to Theta Directory at %s", cfg.ServerURL)
 	log.Printf("Loaded capabilities: Telemetry=%v, LDAP=%v, Reboot=%v, Bash=%v",
 		cfg.Capabilities.Telemetry,
 		cfg.Capabilities.ConfigureLDAP,
@@ -83,7 +83,7 @@ func runAgent() {
 	// Tray IPC server — desktop tray connects here for status updates.
 	go globalTrayServer.Start()
 
-	// WebSocket connection to SSO Manager
+	// WebSocket connection to Theta Directory
 	go connectWebSocket(cm, exec)
 
 	// Home detection + tray status push (polls public IP every 60s).

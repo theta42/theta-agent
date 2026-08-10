@@ -7,6 +7,11 @@ DIST_DIR="./dist"
 mkdir -p "$DIST_DIR"
 
 LDFLAGS="-s -w"
+# Windows GUI binaries (tray, helper) build as GUI-subsystem so no console
+# window pops up when the installer starts the tray or the service spawns the
+# helper. The agent stays a console app (handy for foreground debugging; as a
+# Windows service it never shows a console anyway).
+GUI_LDFLAGS="$LDFLAGS -H=windowsgui"
 
 echo "Building Theta Agent binaries..."
 
@@ -26,10 +31,10 @@ echo "  -> windows/arm64..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-windows-arm64.exe"
 
 echo "  -> windows/amd64 helper..."
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-helper-windows-amd64.exe" ./cmd/theta-agent-helper/
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$GUI_LDFLAGS" -o "$DIST_DIR/theta-agent-helper-windows-amd64.exe" ./cmd/theta-agent-helper/
 
 echo "  -> windows/arm64 helper..."
-CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-helper-windows-arm64.exe" ./cmd/theta-agent-helper/
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$GUI_LDFLAGS" -o "$DIST_DIR/theta-agent-helper-windows-arm64.exe" ./cmd/theta-agent-helper/
 
 echo "  -> darwin/amd64 (macOS Intel)..."
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-darwin-amd64"
@@ -45,10 +50,10 @@ echo "  -> linux/arm64 tray..."
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-linux-arm64" ./cmd/theta-agent-tray/
 
 echo "  -> windows/amd64 tray..."
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-amd64.exe" ./cmd/theta-agent-tray/
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$GUI_LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-amd64.exe" ./cmd/theta-agent-tray/
 
 echo "  -> windows/arm64 tray..."
-CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-arm64.exe" ./cmd/theta-agent-tray/
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$GUI_LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-arm64.exe" ./cmd/theta-agent-tray/
 
 echo ""
 echo "Build complete! Artifacts in $DIST_DIR:"
