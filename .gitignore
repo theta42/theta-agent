@@ -6,5 +6,7 @@ dist/
 agent.yml
 !cmd/theta-agent-helper/
 !cmd/theta-agent-helper/main.go
+!cmd/theta-agent-tray/
+!cmd/theta-agent-tray/main_test.go
 # Fetched by scripts/setup-build-env.ps1, pinned in installer/windows/vendor-manifest.json
 installer/windows/vendor/
