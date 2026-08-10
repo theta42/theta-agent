@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -11,6 +12,14 @@ import (
 
 func withTempHostsFile(t *testing.T, initial string) string {
 	t.Helper()
+	// applyHostsOverride refuses unconditionally on non-Linux (see
+	// hosts_override.go) -- these tests exercise the Linux write path
+	// specifically, so they'd fail for the right reason on the Windows CI
+	// runner if not skipped. Confirmed the hard way: a real CI run failed
+	// here after this was missed.
+	if runtime.GOOS != "linux" {
+		t.Skip("applyHostsOverride is Linux-only; skipping on " + runtime.GOOS)
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hosts")
 	if initial != "" {
