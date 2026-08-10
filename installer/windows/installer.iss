@@ -9,11 +9,11 @@
 ;   theta-agent-2.1.0-windows-amd64-setup.exe /SILENT ^
 ;       /SERVER_URL=https://sso.example.com /JOIN_KEY=tjk_...
 ;
-; Interactively, a wizard page asks for the SSO Manager URL and a join key (with
-; a button that opens the SSO's Directory -> Install Agent page to mint one).
-; In silent mode, /SERVER_URL, /JOIN_KEY, /AUTH_TOKEN, /PUBLIC_KEY and
-; /B64_CONFIG (base64 of a full agent.yml) drive the same result. The values are
-; written into agent.yml so the installed service enrolls on first start.
+; Interactively, a wizard page asks for the Theta Directory URL and a join key
+; (with a button that opens the Theta Directory's Directory -> Install Agent page
+; to mint one). In silent mode, /SERVER_URL, /JOIN_KEY, /AUTH_TOKEN, /PUBLIC_KEY
+; and /B64_CONFIG (base64 of a full agent.yml) drive the same result. The values
+; are written into agent.yml so the installed service enrolls on first start.
 
 #ifndef MyAppVersion
   #define MyAppVersion "2.1.0"
@@ -128,8 +128,8 @@ begin
   Result := True;
 end;
 
-// Opens the SSO's Directory page so the operator can mint a join key right from
-// the wizard. Uses the Server URL they just typed.
+// Opens the Theta Directory page so the operator can mint a join key right
+// from the wizard. Uses the Server URL they just typed.
 procedure OnOpenSSOClick(Sender: TObject);
 var
   Url: String;
@@ -137,7 +137,7 @@ var
 begin
   Url := Trim(ServerURLEdit.Text);
   if Url = '' then begin
-    MsgBox('Enter the SSO Manager URL first (e.g. https://sso.example.com).',
+    MsgBox('Enter the Theta Directory URL first (e.g. https://directory.example.com).',
       mbInformation, MB_OK);
     Exit;
   end;
@@ -150,48 +150,54 @@ var
   InfoLabel: TNewStaticText;
   UrlLabel: TNewStaticText;
   KeyLabel: TNewStaticText;
+  Y: Integer;
 begin
   AgentConfigPage := CreateCustomPage(wpWelcome,
-    'SSO Manager connection',
-    'Tell the agent which SSO to enroll with.');
+    'Theta Directory connection',
+    'Tell the agent which Theta Directory to enroll with.');
 
   InfoLabel := TNewStaticText.Create(AgentConfigPage);
   InfoLabel.Parent := AgentConfigPage.Surface;
   InfoLabel.WordWrap := True;
-  InfoLabel.Caption := 'Paste the SSO Manager URL for this deployment. Then either paste a join key '
+  InfoLabel.Caption := 'Paste the Theta Directory URL for this deployment. Then either paste a join key '
     + '(mint one with the button below, under Directory -> Install Agent) or leave it blank to '
     + 'enroll from the tray / CLI later.';
-  InfoLabel.AutoSize := True;
-  InfoLabel.Width := AgentConfigPage.Surface.Width;
+  // WordWrap + AutoSize are mutually exclusive in VCL; give the wrapped label a
+  // fixed height so the fields below it land on screen.
+  InfoLabel.Width := AgentConfigPage.SurfaceWidth;
+  InfoLabel.Height := ScaleY(48);
+
+  Y := InfoLabel.Top + InfoLabel.Height + ScaleY(12);
 
   UrlLabel := TNewStaticText.Create(AgentConfigPage);
   UrlLabel.Parent := AgentConfigPage.Surface;
-  UrlLabel.Caption := 'SSO Manager URL:';
-  UrlLabel.Top := InfoLabel.Top + InfoLabel.Height + 16;
+  UrlLabel.Caption := 'Theta Directory URL:';
+  UrlLabel.Top := Y;
 
   ServerURLEdit := TNewEdit.Create(AgentConfigPage);
   ServerURLEdit.Parent := AgentConfigPage.Surface;
-  ServerURLEdit.Top := UrlLabel.Top + UrlLabel.Height + 4;
-  ServerURLEdit.Width := AgentConfigPage.Surface.Width;
+  ServerURLEdit.Top := UrlLabel.Top + UrlLabel.Height + ScaleY(4);
+  ServerURLEdit.Width := AgentConfigPage.SurfaceWidth;
   ServerURLEdit.Text := ServerURL;
 
   OpenSSOButton := TNewButton.Create(AgentConfigPage);
   OpenSSOButton.Parent := AgentConfigPage.Surface;
-  OpenSSOButton.Top := ServerURLEdit.Top + ServerURLEdit.Height + 8;
+  OpenSSOButton.Top := ServerURLEdit.Top + ServerURLEdit.Height + ScaleY(10);
   OpenSSOButton.Left := ServerURLEdit.Left;
-  OpenSSOButton.Caption := 'Open SSO install-agent page...';
-  OpenSSOButton.Width := 190;
+  OpenSSOButton.Caption := 'Open Theta Directory install-agent page...';
+  OpenSSOButton.Width := WizardForm.CalculateButtonWidth([OpenSSOButton.Caption]);
+  OpenSSOButton.Height := ScaleY(23);
   OpenSSOButton.OnClick := @OnOpenSSOClick;
 
   KeyLabel := TNewStaticText.Create(AgentConfigPage);
   KeyLabel.Parent := AgentConfigPage.Surface;
   KeyLabel.Caption := 'Join key (optional):';
-  KeyLabel.Top := OpenSSOButton.Top + OpenSSOButton.Height + 12;
+  KeyLabel.Top := OpenSSOButton.Top + OpenSSOButton.Height + ScaleY(12);
 
   JoinKeyEdit := TNewEdit.Create(AgentConfigPage);
   JoinKeyEdit.Parent := AgentConfigPage.Surface;
-  JoinKeyEdit.Top := KeyLabel.Top + KeyLabel.Height + 4;
-  JoinKeyEdit.Width := AgentConfigPage.Surface.Width;
+  JoinKeyEdit.Top := KeyLabel.Top + KeyLabel.Height + ScaleY(4);
+  JoinKeyEdit.Width := AgentConfigPage.SurfaceWidth;
   JoinKeyEdit.Text := JoinKey;
 end;
 

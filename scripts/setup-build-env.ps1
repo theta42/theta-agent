@@ -251,13 +251,16 @@ function Invoke-Build {
     $dist = Join-Path $RepoRoot 'dist'
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
     $flags = '-s -w'
+    # The tray and helper are GUI-subsystem binaries: no console window pops up
+    # when the installer starts the tray or the service spawns the helper.
+    $guiFlags = '-s -w -H=windowsgui'
     foreach ($arch in @('amd64','arm64')) {
         $env:GOOS='windows'; $env:GOARCH=$arch; $env:CGO_ENABLED='0'
         go build "-ldflags=$flags" -o (Join-Path $dist "theta-agent-windows-$arch.exe") $RepoRoot
         if ($LASTEXITCODE -ne 0) { Write-Fail "build agent windows/$arch failed"; return }
-        go build "-ldflags=$flags" -o (Join-Path $dist "theta-agent-tray-windows-$arch.exe") (Join-Path $RepoRoot 'cmd\theta-agent-tray')
+        go build "-ldflags=$guiFlags" -o (Join-Path $dist "theta-agent-tray-windows-$arch.exe") (Join-Path $RepoRoot 'cmd\theta-agent-tray')
         if ($LASTEXITCODE -ne 0) { Write-Fail "build tray windows/$arch failed"; return }
-        go build "-ldflags=$flags" -o (Join-Path $dist "theta-agent-helper-windows-$arch.exe") (Join-Path $RepoRoot 'cmd\theta-agent-helper')
+        go build "-ldflags=$guiFlags" -o (Join-Path $dist "theta-agent-helper-windows-$arch.exe") (Join-Path $RepoRoot 'cmd\theta-agent-helper')
         if ($LASTEXITCODE -ne 0) { Write-Fail "build helper windows/$arch failed"; return }
     }
     Remove-Item Env:GOOS,Env:GOARCH,Env:CGO_ENABLED -ErrorAction SilentlyContinue
