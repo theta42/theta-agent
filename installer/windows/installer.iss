@@ -91,8 +91,10 @@ Filename: "msiexec.exe"; Parameters: "/i ""{app}\vendor\wireguard-amd64-0.5.3.ms
 Filename: "taskkill.exe"; Parameters: "/f /im wireguard.exe"; Flags: runhidden
 ; Register the agent as a SYSTEM auto-start service.
 Filename: "{app}\{#MyAppExeName}"; Parameters: "install-service"; StatusMsg: "Registering theta-agent service..."; Flags: runhidden waituntilterminated
-; Show the tray right away instead of waiting for the next logon.
-Filename: "{app}\tray\theta-agent-tray-windows-amd64.exe"; Description: "Start Theta Agent tray"; StatusMsg: "Starting Theta Agent tray..."; Flags: nowait postinstall skipifsilent
+; Show the tray right away, in silent and interactive installs alike (a silent
+; install is the common path from the Directory's install command, and the tray
+; should appear immediately there too, not only at the next logon).
+Filename: "{app}\tray\theta-agent-tray-windows-amd64.exe"; Description: "Start Theta Agent tray"; StatusMsg: "Starting Theta Agent tray..."; Flags: nowait postinstall
 
 [Code]
 var
@@ -206,11 +208,15 @@ begin
   CreateAgentConfigPage();
 end;
 
-// Pull the values the operator typed into the wizard so WriteAgentConfig can use
-// them; silent installs keep the command-line params.
+// Pull the values the operator typed into the wizard so WriteAgentConfig can
+// use them. In silent mode the wizard is walked programmatically and
+// CurPageChanged fires too -- reading the (empty) edit boxes there would wipe
+// the /SERVER_URL /JOIN_KEY command-line params and leave agent.yml with an
+// empty server_url. Only take the edit values when the wizard is actually
+// being shown interactively.
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if CurPageID = AgentConfigPage.ID then begin
+  if (CurPageID = AgentConfigPage.ID) and (not WizardSilent()) then begin
     ServerURL := Trim(ServerURLEdit.Text);
     JoinKey := Trim(JoinKeyEdit.Text);
   end;

@@ -72,12 +72,10 @@ func runSelfUpdate(args []string) {
 	if err != nil {
 		log.Fatalf("[!] Update failed: cannot read config from %s: %v", configPath, err)
 	}
-	cfg := cm.Get()
-	serverURL := strings.TrimRight(cfg.ServerURL, "/")
-	if serverURL == "" {
-		log.Fatalf("[!] Update failed: server_url is empty in %s", configPath)
-	}
+	_ = cm.Get()
 
+	// Binaries are GitHub release artifacts (DESIGN-WINDOWS.md §9); nothing
+	// binary is served from the SSO's /resources anymore.
 	arch := "amd64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -87,7 +85,7 @@ func runSelfUpdate(args []string) {
 		ext = ".exe"
 	}
 	artifact := fmt.Sprintf("theta-agent-%s-%s%s", runtime.GOOS, arch, ext)
-	downloadURL := fmt.Sprintf("%s/resources/theta-agent/%s", serverURL, artifact)
+	downloadURL := releaseAssetURL(artifact)
 	log.Printf("[+] Downloading latest Theta Agent binary from %s...", downloadURL)
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -160,6 +158,13 @@ func runReinitialize(args []string) {
 	exec := &SystemExecutor{}
 	restartAffectedServices(exec)
 	os.Exit(0)
+}
+
+// releaseAssetURL returns the GitHub release download URL for a theta-agent
+// artifact (e.g. "theta-agent-linux-amd64"). Binaries are built by CI and
+// attached to the release; nothing binary lives in the repos (DESIGN-WINDOWS.md §9).
+func releaseAssetURL(artifact string) string {
+	return "https://github.com/theta42/theta-agent/releases/latest/download/" + artifact
 }
 
 func restartAffectedServices(exec Executor) {
