@@ -9,19 +9,19 @@ package main
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"runtime"
 )
 
 // TraySocketPaths are the paths the daemon tries to bind, in order.
 //
-// Windows has no /run or /tmp; a Unix socket in the per-user temp dir works
-// there (AF_UNIX is supported since Windows 10 1803) and needs no admin
-// rights. Linux keeps the original /run/theta path with a /tmp fallback.
+// Windows has no /run or /tmp. The daemon runs as the SYSTEM service while the
+// tray runs as the logged-in user, so the socket lives in the shared data dir
+// (%ProgramData%\Theta42, created by the installer with a Users-writable ACL)
+// rather than a per-user temp dir — the two processes must agree on one path.
+// Linux keeps the original /run/theta path with a /tmp fallback.
 var TraySocketPaths = func() []string {
 	if runtime.GOOS == "windows" {
-		return []string{filepath.Join(os.TempDir(), "theta-tray.sock")}
+		return []string{windowsTraySocketPath()}
 	}
 	return []string{"/run/theta/tray.sock", "/tmp/theta-tray.sock"}
 }()
@@ -30,7 +30,7 @@ var TraySocketPaths = func() []string {
 // entry in TraySocketPaths on each platform.
 var TraySocket = func() string {
 	if runtime.GOOS == "windows" {
-		return filepath.Join(os.TempDir(), "theta-tray.sock")
+		return windowsTraySocketPath()
 	}
 	return "/tmp/theta-tray.sock"
 }()

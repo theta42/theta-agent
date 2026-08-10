@@ -67,6 +67,21 @@ func SetVPNActive(active bool) {
 	homeState.mu.Unlock()
 }
 
+// SetAutoVPN records the auto-connect preference (initialized from agent.yml,
+// updated by the tray checkbox).
+func SetAutoVPN(v bool) {
+	homeState.mu.Lock()
+	homeState.autoVPN = v
+	homeState.mu.Unlock()
+}
+
+// AutoVPN returns the current auto-connect preference.
+func AutoVPN() bool {
+	homeState.mu.RLock()
+	defer homeState.mu.RUnlock()
+	return homeState.autoVPN
+}
+
 // StartHomeMonitor periodically refreshes the agent's public IP and pushes
 // updated tray status. Call as a goroutine from main().
 func StartHomeMonitor(cfg *Config, connectedFn func() bool) {
@@ -82,7 +97,13 @@ func StartHomeMonitor(cfg *Config, connectedFn func() bool) {
 }
 
 func checkAndPush(cfg *Config, connectedFn func() bool) {
-	ip := fetchPublicIP()
+	// An air-gapped host cannot reach the public-IP providers; when
+	// public_ip_detect is false we skip the network calls entirely and report
+	// no public IP rather than flap the home/away state (DESIGN-WINDOWS.md §10).
+	var ip string
+	if cfg.DetectPublicIP() {
+		ip = fetchPublicIP()
+	}
 	if ip == "" {
 		log.Println("[home-detect] could not determine public IP")
 	}
@@ -101,5 +122,62 @@ func checkAndPush(cfg *Config, connectedFn func() bool) {
 		siteName = "home"
 	}
 
+	// WireGuard state + auto-VPN (DESIGN-WINDOWS.md §5). The tunnel can be
+	// driven by the SSO (wireguard_apply/remove) or by the tray; polling keeps
+	// the tray icon blue and lets auto-VPN react to home/away changes.
+	if cfg.Capabilities.WireGuard {
+		vpn = defaultPlatformOps.WireGuardState()
+		SetVPNActive(vpn)
+		isHome := computeIsHome(agentIP, homeIP, connected, cfg.ServerURL)
+		handleAutoVPN(cfg, isHome, vpn, autoVPN, connected)
+	}
+
 	UpdateTrayStatus(connected, agentIP, homeIP, vpn, autoVPN, siteName, cfg.ServerURL)
+}
+
+// computeIsHome mirrors the home-LAN determination in UpdateTrayStatus: public
+// IP matches the directory's site IP, the server is local/LAN, or the site IP
+// is not yet known (assume local home).
+func computeIsHome(agentPublicIP, homePublicIP string, connected bool, serverURL string) bool {
+	if !connected {
+		return false
+	}
+	isLocalServer := strings.Contains(serverURL, "localhost") ||
+		strings.Contains(serverURL, "127.0.0.1") ||
+		strings.Contains(serverURL, ".local") ||
+		strings.Contains(serverURL, "192.168.") ||
+		strings.Contains(serverURL, "10.")
+	return (homePublicIP != "" && agentPublicIP != "" && agentPublicIP == homePublicIP) || isLocalServer || homePublicIP == ""
+}
+
+// lastAutoVPNChange gates auto-VPN so the home monitor (60s tick) does not
+// hammer connect/disconnect on every poll.
+var lastAutoVPNChange time.Time
+
+// handleAutoVPN connects the tunnel when away from home and auto-connect is on,
+// and drops it again once back on the home LAN.
+func handleAutoVPN(cfg *Config, isHome, vpn, autoVPN, connected bool) {
+	if !autoVPN || !connected {
+		return
+	}
+	now := time.Now()
+	if now.Sub(lastAutoVPNChange) < 2*time.Minute {
+		return
+	}
+
+	if isHome && vpn {
+		log.Println("[home-detect] back home; disconnecting WireGuard (auto-vpn)")
+		if err := defaultPlatformOps.DisconnectWireGuard(); err != nil {
+			log.Printf("[home-detect] disconnect failed: %v", err)
+		}
+		lastAutoVPNChange = now
+		return
+	}
+	if !isHome && !vpn {
+		log.Println("[home-detect] away from home; connecting WireGuard (auto-vpn)")
+		if err := defaultPlatformOps.ConnectWireGuard(); err != nil {
+			log.Printf("[home-detect] connect failed: %v", err)
+		}
+		lastAutoVPNChange = now
+	}
 }

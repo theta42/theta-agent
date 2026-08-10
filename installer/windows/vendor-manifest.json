@@ -1,0 +1,34 @@
+{
+  "comment": "Pinned third-party assets bundled into the Windows installer (DESIGN-WINDOWS.md §8). The setup script (scripts/setup-build-env.ps1) fetches these into installer/windows/vendor/ and verifies sha256; nothing is committed to git.",
+  "assets": [
+    {
+      "name": "wireguard-amd64-0.5.3.msi",
+      "url": "https://download.wireguard.com/windows-client/wireguard-amd64-0.5.3.msi",
+      "sha256": "76FCEC042C5989C5B816CD32EAED1E5B1C3B998A4B1C9ECA55F299E3314EF7E4",
+      "purpose": "Official WireGuard for Windows client (vendor-signed drivers install offline)"
+    },
+    {
+      "name": "vc_redist.x64.exe",
+      "url": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+      "sha256": "CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B",
+      "purpose": "VC++ v14 runtime required by the OpenCredential credential provider"
+    },
+    {
+      "name": "OpenCredentialInstaller-1.0.0.0.exe",
+      "url": "https://github.com/pedropablobm/OpenCredential/releases/download/v1.0.0.0/OpenCredentialInstaller-1.0.0.0.exe",
+      "sha256": "7687A99F0B3D6E910BBFB883C31231EB8C8F6E4439134CC3522A86CC63DA1A52",
+      "purpose": "OpenCredential (BSD-3 pGina fork) credential provider installer — LDAP-backed Windows logon"
+    }
+  ],
+  "toolchain": {
+    "go": {
+      "version": "1.22.2",
+      "url": "https://go.dev/dl/go1.22.2.windows-amd64.zip"
+    },
+    "inno": {
+      "version": "7.0.2",
+      "url": "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe",
+      "sha256": "5AD54CA3DEF786F8F4212552E54CC6D8D61329E2D24A1CFEE0571D42C2684FF1"
+    }
+  }
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -219,6 +220,47 @@ func TestHandleCommand(t *testing.T) {
 			expectedCmd:    nil,
 		},
 		{
+			name: "wireguard_apply allowed",
+			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
+				Capabilities: Capabilities{WireGuard: true},
+			},
+			msg: WSMessage{
+				Type: "wireguard_apply",
+				Payload: map[string]interface{}{
+					"config": "[Interface]\nAddress = 10.0.0.2/32\n",
+				},
+			},
+			signed:         true,
+			expectedStatus: "ok",
+			expectedCmd:    []string{"wg-quick", "up", "theta-mesh"},
+		},
+		{
+			name: "wireguard_apply denied",
+			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
+				Capabilities: Capabilities{WireGuard: false},
+			},
+			msg: WSMessage{
+				Type:    "wireguard_apply",
+				Payload: map[string]interface{}{"config": "[Interface]\n"},
+			},
+			signed:         true,
+			expectedStatus: "error",
+			expectedCmd:    nil,
+		},
+		{
+			name: "wireguard_remove allowed",
+			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
+				Capabilities: Capabilities{WireGuard: true},
+			},
+			msg:             WSMessage{Type: "wireguard_remove"},
+			signed:          true,
+			expectedStatus:  "ok",
+			expectedCmd:     []string{"wg-quick", "down", "theta-mesh"},
+		},
+		{
 			name: "heartbeat_ack is silently ignored",
 			cfg: &Config{
 				Capabilities: Capabilities{},
@@ -245,6 +287,19 @@ func TestHandleCommand(t *testing.T) {
 			mockConn := &MockConn{}
 			mockExec := &MockExecutor{}
 			cm := &ConfigManager{current: tc.cfg}
+
+			// The dispatch tests assert the exact command lines the Linux
+			// executor produces; pin the platform ops so they behave the same
+			// on any CI host (Windows included). A temp dir holds the WireGuard
+			// config so wireguard_apply's persistence step is writable.
+			prevOps := defaultPlatformOps
+			defaultPlatformOps = &linuxPlatformOps{
+				exec:       mockExec,
+				tunnelName: "theta-mesh",
+				confPath:   filepath.Join(t.TempDir(), "theta-mesh.conf"),
+			}
+			defer func() { defaultPlatformOps = prevOps }()
+
 			msg := tc.msg
 			if tc.signed {
 				msg.Payload = sign(t, msg.Payload)

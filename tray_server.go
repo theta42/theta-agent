@@ -15,6 +15,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -37,6 +40,7 @@ func (ts *trayServer) Start() {
 
 	for _, p := range TraySocketPaths {
 		os.Remove(p)
+		os.MkdirAll(filepath.Dir(p), 0755) //nolint:errcheck
 		l, err = net.Listen("unix", p)
 		if err == nil {
 			boundPath = p
@@ -93,17 +97,47 @@ func (ts *trayServer) handleCommand(cmd TrayCommand) {
 		ts.mu.Lock()
 		ts.status.AutoVPN = cmd.Value
 		ts.mu.Unlock()
+		SetAutoVPN(cmd.Value)
+		if currentCM != nil {
+			if err := currentCM.PersistAutoVPN(cmd.Value); err != nil {
+				log.Printf("[tray-ipc] could not persist auto_vpn: %v", err)
+			}
+		}
 		log.Printf("[tray-ipc] auto_vpn set to %v", cmd.Value)
-		// TODO: persist to agent.yml
 	case "vpn_connect":
 		log.Printf("[tray-ipc] VPN connect requested")
-		// TODO: invoke WireGuard connect
+		if err := defaultPlatformOps.ConnectWireGuard(); err != nil {
+			log.Printf("[tray-ipc] VPN connect failed: %v", err)
+		}
 	case "vpn_disconnect":
 		log.Printf("[tray-ipc] VPN disconnect requested")
-		// TODO: invoke WireGuard disconnect
+		if err := defaultPlatformOps.DisconnectWireGuard(); err != nil {
+			log.Printf("[tray-ipc] VPN disconnect failed: %v", err)
+		}
+	case "reinit":
+		log.Printf("[tray-ipc] clearing enrollment (re-enroll requested)")
+		if currentCM != nil {
+			if err := currentCM.ClearEnrollment(); err != nil {
+				log.Printf("[tray-ipc] could not clear enrollment: %v", err)
+			}
+		}
+	case "open_config":
+		log.Printf("[tray-ipc] opening config %s", defaultConfigPath())
+		openInDefaultViewer(defaultConfigPath())
 	default:
 		log.Printf("[tray-ipc] unknown command: %q", cmd.Command)
 	}
+}
+
+// openInDefaultViewer opens a file/folder with the platform default handler.
+func openInDefaultViewer(path string) {
+	if runtime.GOOS == "windows" {
+		// explorer /select,<path> opens the parent folder with the file
+		// selected. explorer is a GUI app, so no console window appears.
+		_ = exec.Command("explorer", "/select,"+path).Start()
+		return
+	}
+	_ = exec.Command("xdg-open", path).Start()
 }
 
 // Push broadcasts an updated status to all connected tray clients.

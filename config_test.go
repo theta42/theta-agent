@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -155,10 +156,13 @@ capabilities:
 		t.Errorf("Credential() should prefer the issued token, got %q", cm.Get().Credential())
 	}
 
-	// file must stay 0600 -- it now holds a credential
-	fi, _ := os.Stat(path)
-	if fi.Mode().Perm() != 0600 {
-		t.Errorf("expected mode 0600, got %o", fi.Mode().Perm())
+	// file must stay 0600 -- it now holds a credential. POSIX-only: Windows has
+	// no mode bits (0666 is reported regardless) and relies on ACLs instead.
+	if runtime.GOOS != "windows" {
+		fi, _ := os.Stat(path)
+		if fi.Mode().Perm() != 0600 {
+			t.Errorf("expected mode 0600, got %o", fi.Mode().Perm())
+		}
 	}
 }
 
@@ -200,5 +204,57 @@ func TestPersistEnrollmentRejectsEmptyToken(t *testing.T) {
 	cm, _ := NewConfigManager(path)
 	if err := cm.PersistEnrollment("", "pk"); err == nil {
 		t.Error("expected an error when the server sends no token")
+	}
+}
+
+// TestPersistAutoVPN writes the tray preference into the file and reloads it.
+func TestPersistAutoVPN(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/agent.yml"
+	os.WriteFile(path, []byte("server_url: \"https://sso.example.com\"\njoin_key: \"tjk_abc123\"\n"), 0600)
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cm.PersistAutoVPN(true); err != nil {
+		t.Fatalf("PersistAutoVPN: %v", err)
+	}
+	if !cm.Get().AutoVPN {
+		t.Errorf("AutoVPN should be true after persist")
+	}
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), "auto_vpn: true") {
+		t.Errorf("expected auto_vpn: true in file, got:\n%s", out)
+	}
+
+	if err := cm.PersistAutoVPN(false); err != nil {
+		t.Fatalf("PersistAutoVPN(false): %v", err)
+	}
+	if cm.Get().AutoVPN {
+		t.Errorf("AutoVPN should be false after persist")
+	}
+}
+
+// TestClearEnrollment blanks credentials so the agent re-enrolls.
+func TestClearEnrollment(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/agent.yml"
+	os.WriteFile(path, []byte("server_url: \"https://sso.example.com\"\nauth_token: \"tok-abc\"\npublic_key: \"PK\"\njoin_key: \"tjk_keep\"\n"), 0600)
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cm.ClearEnrollment(); err != nil {
+		t.Fatalf("ClearEnrollment: %v", err)
+	}
+	cfg := cm.Get()
+	if cfg.AuthToken != "" || cfg.PublicKey != "" {
+		t.Errorf("expected cleared credentials, got token=%q pub=%q", cfg.AuthToken, cfg.PublicKey)
+	}
+	out, _ := os.ReadFile(path)
+	if strings.Contains(string(out), "tok-abc") {
+		t.Errorf("old token should be gone from file, got:\n%s", out)
 	}
 }
