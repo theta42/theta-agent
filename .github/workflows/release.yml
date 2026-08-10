@@ -83,14 +83,13 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-build-env.ps1 -SkipGo -Build -CI
           if ($LASTEXITCODE -ne 0) { throw "setup-build-env failed" }
 
-      - name: Upload windows artifacts
+      - name: Upload windows desktop artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-desktop
           path: |
             dist/theta-agent-tray-windows-*.exe
             dist/theta-agent-helper-windows-*.exe
-            dist/theta-agent-windows-*.exe
             dist/theta-agent-*-setup.exe
           if-no-files-found: error
 
