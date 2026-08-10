@@ -19,6 +19,7 @@ type Capabilities struct {
 	LdapTunnel     bool     `yaml:"ldap_tunnel"`
 	Secrets        bool     `yaml:"secrets"`
 	IAM            bool     `yaml:"iam"`
+	WireGuard      bool     `yaml:"wireguard"`
 }
 
 // SecretTarget maps a local template to a rendered target file and an optional
@@ -31,10 +32,13 @@ type SecretTarget struct {
 
 // WireGuardConfig holds the mesh client settings (DESIGN-WINDOWS.md §5).
 type WireGuardConfig struct {
-	// TunnelName is the Windows WireGuard tunnel/service name.
+	// TunnelName is the WireGuard interface (Linux) / service name (Windows).
 	TunnelName string `yaml:"tunnel_name"`
 	// Conf is where the pushed peer config is persisted on disk.
 	Conf string `yaml:"conf"`
+	// Executable is the wireguard.exe path (Windows); "" = PATH or default
+	// install location.
+	Executable string `yaml:"executable"`
 }
 
 type Config struct {
@@ -55,6 +59,7 @@ type Config struct {
 	ServiceName string           `yaml:"service_name"` // Windows service name
 	DesktopHelper string         `yaml:"desktop_helper"` // theta-agent-helper.exe path
 	PublicIPDetect *bool         `yaml:"public_ip_detect"` // false disables external lookups (air-gap)
+	AutoVPN       bool           `yaml:"auto_vpn"`      // auto-connect WireGuard when away
 	WireGuard     WireGuardConfig `yaml:"wireguard"`
 }
 
@@ -164,12 +169,69 @@ func (cm *ConfigManager) PersistEnrollment(token, publicKey string) error {
 	return nil
 }
 
+// PersistAutoVPN writes the tray's auto-VPN preference back into agent.yml so
+// it survives a restart. Same line-preserving edit as PersistEnrollment.
+func (cm *ConfigManager) PersistAutoVPN(value bool) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	raw, err := os.ReadFile(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", cm.configPath, err)
+	}
+	out := setYamlScalarValue(string(raw), "auto_vpn", fmt.Sprintf("%t", value), false)
+	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
+		return fmt.Errorf("write %s: %w", cm.configPath, err)
+	}
+
+	cfg, err := LoadConfig(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("reload after auto_vpn: %w", err)
+	}
+	cm.current = cfg
+	return nil
+}
+
+// ClearEnrollment blanks the auth_token and public_key so the agent re-enrolls
+// with whatever join_key is configured. Triggered by the tray's "re-enroll".
+func (cm *ConfigManager) ClearEnrollment() error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	raw, err := os.ReadFile(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", cm.configPath, err)
+	}
+	out := setYamlScalar(string(raw), "auth_token", "")
+	out = setYamlScalar(out, "public_key", "")
+	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
+		return fmt.Errorf("write %s: %w", cm.configPath, err)
+	}
+
+	cfg, err := LoadConfig(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("reload after enrollment clear: %w", err)
+	}
+	cm.current = cfg
+	return nil
+}
+
 // setYamlScalar replaces the value of a top-level `key: "..."` line, or appends
 // the key when it is absent. Deliberately line-based rather than a YAML
 // round-trip so comments and formatting survive.
 func setYamlScalar(doc, key, value string) string {
+	return setYamlScalarValue(doc, key, value, true)
+}
+
+// setYamlScalarValue is setYamlScalar with control over quoting. Numeric/bool
+// scalars (e.g. auto_vpn: true) must stay unquoted or YAML decodes them as
+// strings.
+func setYamlScalarValue(doc, key, value string, quote bool) string {
+	line := fmt.Sprintf("%s: %s", key, value)
+	if quote {
+		line = fmt.Sprintf("%s: %q", key, value)
+	}
 	re := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(key) + `[ \t]*:.*$`)
-	line := fmt.Sprintf("%s: %q", key, value)
 	if re.MatchString(doc) {
 		return re.ReplaceAllString(doc, line)
 	}

@@ -116,23 +116,32 @@ func sleepHost() {
 	}
 }
 
-// logoutSession logs off the active console session, or the session of the
+// logoutSession logs off the active console session, or every session of the
 // given user (matched by WTS session enumeration).
 func logoutSession(user string) {
-	sessionID := activeConsoleSessionID()
-	if user != "" {
-		id, err := sessionForUser(user)
+	var ids []uint32
+	if user == "" {
+		if id := activeConsoleSessionID(); id != 0 {
+			ids = []uint32{id}
+		}
+	} else {
+		var err error
+		ids, err = sessionsForUser(user)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "logout: %v\n", err)
 			os.Exit(1)
 		}
-		sessionID = id
 	}
-	if sessionID == 0 {
+	if len(ids) == 0 {
 		fmt.Fprintln(os.Stderr, "logout: no active session to log off")
 		os.Exit(1)
 	}
+	for _, id := range ids {
+		logoffSession(id)
+	}
+}
 
+func logoffSession(sessionID uint32) {
 	r, _, err := procWTSLogoffSession.Call(wtsCurrentServerHandle, uintptr(sessionID), 0)
 	if r == 0 {
 		fmt.Fprintf(os.Stderr, "WTSLogoffSession(%d) failed: %v\n", sessionID, err)
@@ -146,25 +155,30 @@ func activeConsoleSessionID() uint32 {
 	return uint32(id)
 }
 
-func sessionForUser(user string) (uint32, error) {
+// sessionsForUser returns every session whose logged-in user matches.
+func sessionsForUser(user string) ([]uint32, error) {
 	var pInfo *wtsSessionInfo
 	var count uint32
 
 	r, _, err := procWTSEnumerateSessionsW.Call(wtsCurrentServerHandle, 0, 1, uintptr(unsafe.Pointer(&pInfo)), uintptr(unsafe.Pointer(&count)))
 	if r == 0 {
-		return 0, fmt.Errorf("WTSEnumerateSessionsW: %v", err)
+		return nil, fmt.Errorf("WTSEnumerateSessionsW: %v", err)
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(pInfo)))
 
 	want := strings.ToLower(user)
+	var ids []uint32
 	for i := uint32(0); i < count; i++ {
 		info := (*wtsSessionInfo)(unsafe.Pointer(uintptr(unsafe.Pointer(pInfo)) + uintptr(i)*unsafe.Sizeof(*pInfo)))
 		name := wtsSessionUsername(info.SessionID)
 		if name != "" && strings.ToLower(name) == want {
-			return info.SessionID, nil
+			ids = append(ids, info.SessionID)
 		}
 	}
-	return 0, fmt.Errorf("no active session for user %q", user)
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no active session for user %q", user)
+	}
+	return ids, nil
 }
 
 func wtsSessionUsername(sessionID uint32) string {
