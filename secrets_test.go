@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -68,10 +69,14 @@ func TestRenderSecrets(t *testing.T) {
 		t.Fatalf("rendered content mismatch:\n got: %q\nwant: %q", content, expected)
 	}
 
-	// The target should be 0600 (holds secrets).
-	info, _ := os.Stat(target)
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("expected 0600, got %o", info.Mode().Perm())
+	// The target should be 0600 (holds secrets). Windows has no POSIX modes and
+	// reports 0666 regardless; the intent there is covered by the ACLs the
+	// installer sets on the target directory.
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(target)
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("expected 0600, got %o", info.Mode().Perm())
+		}
 	}
 }
 

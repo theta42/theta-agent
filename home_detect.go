@@ -82,7 +82,13 @@ func StartHomeMonitor(cfg *Config, connectedFn func() bool) {
 }
 
 func checkAndPush(cfg *Config, connectedFn func() bool) {
-	ip := fetchPublicIP()
+	// An air-gapped host cannot reach the public-IP providers; when
+	// public_ip_detect is false we skip the network calls entirely and report
+	// no public IP rather than flap the home/away state (DESIGN-WINDOWS.md §10).
+	var ip string
+	if cfg.DetectPublicIP() {
+		ip = fetchPublicIP()
+	}
 	if ip == "" {
 		log.Println("[home-detect] could not determine public IP")
 	}

@@ -25,6 +25,12 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_D
 echo "  -> windows/arm64..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-windows-arm64.exe"
 
+echo "  -> windows/amd64 helper..."
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-helper-windows-amd64.exe" ./cmd/theta-agent-helper/
+
+echo "  -> windows/arm64 helper..."
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-helper-windows-arm64.exe" ./cmd/theta-agent-helper/
+
 echo "  -> darwin/amd64 (macOS Intel)..."
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-darwin-amd64"
 
@@ -37,6 +43,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR
 
 echo "  -> linux/arm64 tray..."
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-linux-arm64" ./cmd/theta-agent-tray/
+
+echo "  -> windows/amd64 tray..."
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-amd64.exe" ./cmd/theta-agent-tray/
+
+echo "  -> windows/arm64 tray..."
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-arm64.exe" ./cmd/theta-agent-tray/
 
 echo ""
 echo "Build complete! Artifacts in $DIST_DIR:"

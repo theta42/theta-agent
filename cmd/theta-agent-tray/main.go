@@ -36,12 +36,17 @@ import (
 // ── IPC types (duplicated from the main agent package; tray is its own binary) ──
 
 // traySocketPaths returns the daemon IPC socket paths for this platform, in
-// the same order the daemon tries to bind them. Windows has no /run or /tmp,
-// so it uses a Unix socket under the per-user temp dir; Linux keeps the
-// original pair.
+// the same order the daemon tries to bind them. Windows has no /run or /tmp and
+// the daemon runs as a SYSTEM service, so both sides use the shared
+// %ProgramData%\Theta42\tray.sock (installer creates the dir with a
+// Users-writable ACL); Linux keeps the original pair.
 func traySocketPaths() []string {
 	if runtime.GOOS == "windows" {
-		return []string{filepath.Join(os.TempDir(), "theta-tray.sock")}
+		pd := os.Getenv("ProgramData")
+		if pd == "" {
+			pd = `C:\ProgramData`
+		}
+		return []string{filepath.Join(pd, "Theta42", "tray.sock")}
 	}
 	return []string{"/run/theta/tray.sock", "/tmp/theta-tray.sock"}
 }

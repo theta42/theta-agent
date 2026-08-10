@@ -29,6 +29,14 @@ type SecretTarget struct {
 	Reload   string `yaml:"reload"`
 }
 
+// WireGuardConfig holds the mesh client settings (DESIGN-WINDOWS.md §5).
+type WireGuardConfig struct {
+	// TunnelName is the Windows WireGuard tunnel/service name.
+	TunnelName string `yaml:"tunnel_name"`
+	// Conf is where the pushed peer config is persisted on disk.
+	Conf string `yaml:"conf"`
+}
+
 type Config struct {
 	ServerURL string `yaml:"server_url"`
 	AuthToken string `yaml:"auth_token"`
@@ -36,12 +44,37 @@ type Config struct {
 	// the server exchanges it for a per-agent AuthToken (written back to this
 	// file), so it is a bootstrap value, not a long-term credential. Used only
 	// when AuthToken is empty.
-	JoinKey      string       `yaml:"join_key"`
-	Location     string       `yaml:"location"`
-	PublicKey    string       `yaml:"public_key"` // Ed25519 public key for signed commands
-	LdapSocket   string        `yaml:"ldap_socket"` // local LDAP tunnel socket (DESIGN.md §4)
-	Secrets      []SecretTarget `yaml:"secrets"`    // secret templates to render (DESIGN.md §5)
-	Capabilities Capabilities  `yaml:"capabilities"`
+	JoinKey      string         `yaml:"join_key"`
+	Location     string         `yaml:"location"`
+	PublicKey    string         `yaml:"public_key"`     // Ed25519 public key for signed commands
+	LdapSocket   string         `yaml:"ldap_socket"`    // local LDAP tunnel socket (DESIGN.md §4)
+	Secrets      []SecretTarget `yaml:"secrets"`        // secret templates to render (DESIGN.md §5)
+	Capabilities Capabilities   `yaml:"capabilities"`
+
+	// Windows-specific (DESIGN-WINDOWS.md §11).
+	ServiceName string           `yaml:"service_name"` // Windows service name
+	DesktopHelper string         `yaml:"desktop_helper"` // theta-agent-helper.exe path
+	PublicIPDetect *bool         `yaml:"public_ip_detect"` // false disables external lookups (air-gap)
+	WireGuard     WireGuardConfig `yaml:"wireguard"`
+}
+
+// DetectPublicIP reports whether the agent may perform external public-IP
+// lookups. Defaults to true; an air-gapped host sets public_ip_detect: false so
+// the agent never tries to reach ipify/icanhazip/etc.
+func (c *Config) DetectPublicIP() bool {
+	if c.PublicIPDetect == nil {
+		return true
+	}
+	return *c.PublicIPDetect
+}
+
+// ServiceNameOrDefault returns the Windows service name, defaulting to
+// theta-agent when unset.
+func (c *Config) ServiceNameOrDefault() string {
+	if c.ServiceName != "" {
+		return c.ServiceName
+	}
+	return "theta-agent"
 }
 
 // Credential returns the value to present when connecting: our own token once
