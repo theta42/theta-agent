@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -147,7 +146,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			// credential every 5s just floods the SSO and its audit log
 			// forever, so back off hard and say plainly what is wrong.
 			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-				log.Printf("Server rejected our token (HTTP %d). Enroll this agent in the SSO Directory and put the issued token in agent.yml. Retrying in %s.", resp.StatusCode, authRetryInterval)
+				log.Printf("Server rejected our token (HTTP %d). Enroll this agent in the Theta Directory and put the issued token in agent.yml. Retrying in %s.", resp.StatusCode, authRetryInterval)
 				time.Sleep(authRetryInterval)
 				continue
 			}
@@ -156,7 +155,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			continue
 		}
 
-		log.Println("Successfully connected to SSO Manager.")
+		log.Println("Successfully connected to Theta Directory.")
 		wsConnected.Store(true)
 
 		stopCh := make(chan struct{})
@@ -174,7 +173,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		if cfg.Capabilities.LdapTunnel || cfg.Capabilities.ConfigureLDAP {
 			socketPath := cfg.LdapSocket
 			if socketPath == "" {
-				socketPath = "/run/theta/ldap.sock"
+				socketPath = defaultLdapSocketPath()
 			}
 			go tunnel.start(socketPath, stopCh)
 		}
@@ -214,7 +213,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				// than at Dial.
 				if websocket.IsCloseError(err, closeUnauthorized, closeRevoked, closeTokenRotated) {
 					authRejected = true
-					log.Printf("Server closed the connection: %v. This agent's token is not valid for that SSO — re-enroll it and update agent.yml.", err)
+					log.Printf("Server closed the connection: %v. This agent's token is not valid for that Theta Directory — re-enroll it and update agent.yml.", err)
 				} else {
 					log.Println("WebSocket read error:", err)
 				}
@@ -297,7 +296,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 
 		log.Printf("Fetching logs for service %s (%d lines)...", serviceName, linesCount)
-		out, err := exec.Execute("journalctl", "-u", serviceName, "-n", fmt.Sprintf("%d", linesCount), "--no-pager")
+		out, err := defaultPlatformOps.FetchLogs(serviceName, linesCount)
 		if err != nil {
 			log.Printf("Log fetch failed: %v", err)
 			sendResponse("error", "failed to fetch logs")
@@ -329,13 +328,13 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 
 		log.Printf("Updating binary from %s...", urlStr)
-		if err := downloadAndUpdateBinary(urlStr, checksum); err != nil {
+		if err := defaultPlatformOps.ApplyUpdate(urlStr, checksum); err != nil {
 			log.Printf("Update failed: %v", err)
 			sendResponse("error", fmt.Sprintf("update failed: %v", err))
 			return
 		}
 		sendResponse("ok", "update applied successfully; restarting agent...")
-		os.Exit(0)
+		defaultPlatformOps.SelfRestart()
 	case "config":
 		// A config frame carrying credentials means the server accepted our
 		// join key and enrolled this host.
@@ -346,7 +345,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 				log.Printf("Enrolled, but could not persist credentials: %v", err)
 				log.Printf("This agent will re-enroll on every reconnect until %s is writable.", cm.configPath)
 			} else {
-				log.Printf("Enrolled with the SSO. Credentials written to %s; the join key is no longer needed.", cm.configPath)
+				log.Printf("Enrolled with Theta Directory. Credentials written to %s; the join key is no longer needed.", cm.configPath)
 			}
 			sendResponse("ok", "enrollment stored")
 			return
@@ -370,7 +369,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		log.Printf("Executing reboot...")
-		if _, err := exec.Execute("reboot"); err != nil {
+		if _, err := defaultPlatformOps.Reboot(); err != nil {
 			log.Printf("Reboot failed: %v", err)
 			sendResponse("error", "reboot failed")
 			return
@@ -388,8 +387,8 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 		log.Printf("Executing shutdown...")
 		sendResponse("ok", "system shutting down")
-		if _, err := exec.Execute("shutdown", "-h", "now"); err != nil {
-			exec.Execute("poweroff")
+		if _, err := defaultPlatformOps.Shutdown(); err != nil {
+			log.Printf("Shutdown failed: %v", err)
 		}
 		return
 	case "desktop_control", "lock_session", "logout_user", "display_off", "sleep_host":
@@ -399,35 +398,15 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 		targetUser, _ := msg.Payload["user"].(string)
 		log.Printf("Executing desktop control action '%s' for user '%s'...", subAction, targetUser)
-		var out []byte
-		var err error
 
 		switch subAction {
-		case "lock_session", "lock":
-			out, err = exec.Execute("loginctl", "lock-sessions")
-			if err != nil {
-				out, err = exec.Execute("sh", "-c", "DISPLAY=:0 xdg-screensaver lock || DISPLAY=:0 xset dpms force off")
-			}
-		case "logout_user", "logout":
-			if targetUser != "" {
-				out, err = exec.Execute("loginctl", "terminate-user", targetUser)
-				if err != nil {
-					out, err = exec.Execute("pkill", "-KILL", "-u", targetUser)
-				}
-			} else {
-				out, err = exec.Execute("loginctl", "terminate-session")
-				if err != nil {
-					out, err = exec.Execute("pkill", "-9", "-f", "session-child")
-				}
-			}
-		case "display_off":
-			out, err = exec.Execute("sh", "-c", "DISPLAY=:0 xset dpms force off || loginctl lock-sessions")
-		case "sleep_host", "sleep":
-			out, err = exec.Execute("systemctl", "suspend")
+		case "lock_session", "lock", "logout_user", "logout", "display_off", "sleep_host", "sleep":
 		default:
 			sendResponse("error", fmt.Sprintf("unknown desktop action '%s'", subAction))
 			return
 		}
+
+		out, err := defaultPlatformOps.DesktopControl(subAction, targetUser)
 
 		errMsg := ""
 		if err != nil {
@@ -457,7 +436,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		log.Printf("Executing systemctl %s %s...", action, serviceName)
-		out, err := exec.Execute("systemctl", action, serviceName)
+		out, err := defaultPlatformOps.ServiceControl(serviceName, action)
 		errMsg := ""
 		if err != nil {
 			errMsg = err.Error()
@@ -480,7 +459,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		log.Printf("Restarting service %s...", serviceName)
-		if _, err := exec.Execute("systemctl", "restart", serviceName); err != nil {
+		if _, err := defaultPlatformOps.ServiceControl(serviceName, "restart"); err != nil {
 			log.Printf("Service restart failed: %v", err)
 			sendResponse("error", "restart failed")
 			return
@@ -504,69 +483,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 
-		log.Println("Pushing updated SSSD configuration...")
-		_ = os.MkdirAll("/etc/sssd", 0755)
-		if err := exec.WriteFile("/etc/sssd/sssd.conf", []byte(configData), 0600); err != nil {
-			log.Printf("Failed to write SSSD config: %v", err)
-			sendResponse("error", "failed to write config")
+		if err := defaultPlatformOps.ConfigureLDAP(configData); err != nil {
+			log.Printf("LDAP configuration failed: %v", err)
+			sendResponse("error", err.Error())
 			return
 		}
-
-		// Ensure /etc/nsswitch.conf enables sss for passwd, group, shadow, sudoers
-		if nssBytes, err := os.ReadFile("/etc/nsswitch.conf"); err == nil {
-			nssContent := string(nssBytes)
-			updatedNss := false
-			lines := strings.Split(nssContent, "\n")
-			for i, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if (strings.HasPrefix(trimmed, "passwd:") || strings.HasPrefix(trimmed, "group:") || strings.HasPrefix(trimmed, "shadow:") || strings.HasPrefix(trimmed, "sudoers:")) && !strings.Contains(trimmed, "sss") {
-					lines[i] = line + " sss"
-					updatedNss = true
-				}
-			}
-			if updatedNss {
-				_ = os.WriteFile("/etc/nsswitch.conf", []byte(strings.Join(lines, "\n")), 0644)
-			}
-		}
-
-		log.Println("Restarting SSSD service...")
-		if _, err := exec.Execute("systemctl", "restart", "sssd"); err != nil {
-			log.Printf("SSSD restart failed (%v), attempting auto-install of missing packages...", err)
-			if _, err2 := exec.Execute("sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get update -y -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sssd sssd-ldap libnss-sss libpam-sss libsss-sudo libpam-runtime || dnf install -y sssd sssd-ldap sssd-tools || yum install -y sssd sssd-ldap sssd-tools"); err2 == nil {
-				_, _ = exec.Execute("sh", "-c", "pam-auth-update --package --enable mkhomedir sss || true")
-				if _, err3 := exec.Execute("systemctl", "restart", "sssd"); err3 == nil {
-					// Configure SSH AuthorizedKeysCommand
-					_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
-					sshConfPath := "/etc/ssh/sshd_config.d/theta-sssd.conf"
-					sshConfContent := "AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys %u\nAuthorizedKeysCommandUser nobody\n"
-					_ = os.WriteFile(sshConfPath, []byte(sshConfContent), 0644)
-					_, _ = exec.Execute("systemctl", "reload", "sshd")
-					sendResponse("ok", "LDAP configuration updated")
-					return
-				}
-			}
-			sendResponse("error", "failed to restart sssd")
-			return
-		}
-
-		// Ensure /etc/ssh/sshd_config.d/theta-sssd.conf is created for SSH AuthorizedKeysCommand
-		_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
-		sshConfPath := "/etc/ssh/sshd_config.d/theta-sssd.conf"
-		sshConfContent := "AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys %u\nAuthorizedKeysCommandUser nobody\n"
-		if err := os.WriteFile(sshConfPath, []byte(sshConfContent), 0644); err == nil {
-			_, _ = exec.Execute("systemctl", "reload", "sshd")
-		}
-		if sshdBytes, err2 := os.ReadFile("/etc/ssh/sshd_config"); err2 == nil {
-			sshdStr := string(sshdBytes)
-			if !strings.Contains(sshdStr, "sss_ssh_authorizedkeys") {
-				sshdStr += "\nAuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys %u\nAuthorizedKeysCommandUser nobody\n"
-				_ = os.WriteFile("/etc/ssh/sshd_config", []byte(sshdStr), 0644)
-				_, _ = exec.Execute("systemctl", "reload", "sshd")
-			}
-		}
-
-		// Ensure PAM mkhomedir is enabled
-		_, _ = exec.Execute("sh", "-c", "pam-auth-update --package --enable mkhomedir sss || true")
 
 		sendResponse("ok", "LDAP configuration updated")
 	case "render_secrets":
@@ -603,12 +524,53 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		log.Printf("Applying IAM revision %d for node %s...", payload.Revision, payload.NodeID)
-		if err := applyIAM(payload, exec); err != nil {
+		if err := defaultPlatformOps.ApplyIAM(payload); err != nil {
 			log.Printf("IAM apply failed: %v", err)
 			sendResponse("error", fmt.Sprintf("iam apply failed: %v", err))
 			return
 		}
 		sendResponse("ok", "iam applied")
+	case "wireguard_apply":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.WireGuard {
+			log.Println("WireGuard apply rejected: capability disabled in agent.yml")
+			sendResponse("error", "wireguard capability disabled")
+			return
+		}
+		conf, _ := msg.Payload["config"].(string)
+		if conf == "" {
+			sendResponse("error", "missing wireguard config")
+			return
+		}
+		log.Printf("Applying WireGuard peer config...")
+		if err := defaultPlatformOps.ApplyWireGuard(conf); err != nil {
+			log.Printf("WireGuard apply failed: %v", err)
+			sendResponse("error", fmt.Sprintf("wireguard apply failed: %v", err))
+			return
+		}
+		SetVPNActive(true)
+		sendResponse("ok", "wireguard applied")
+	case "wireguard_remove":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.WireGuard {
+			log.Println("WireGuard remove rejected: capability disabled in agent.yml")
+			sendResponse("error", "wireguard capability disabled")
+			return
+		}
+		log.Printf("Removing WireGuard tunnel...")
+		if err := defaultPlatformOps.RemoveWireGuard(); err != nil {
+			log.Printf("WireGuard remove failed: %v", err)
+			sendResponse("error", fmt.Sprintf("wireguard remove failed: %v", err))
+			return
+		}
+		SetVPNActive(false)
+		sendResponse("ok", "wireguard removed")
 	case "arbitrary_bash":
 		if !verifySignature(cfg, msg) {
 			sendResponse("error", "signature verification failed")
@@ -628,7 +590,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 
 		log.Printf("Executing remote script: %s", script)
-		out, err := exec.Execute("bash", "-c", script)
+		out, err := defaultPlatformOps.RunScript(script)
 		if err != nil {
 			log.Printf("Script execution failed: %v", err)
 			sendResponse("error", fmt.Sprintf("execution failed: %v", err))
@@ -655,20 +617,24 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 	}
 }
 
-func downloadAndUpdateBinary(downloadURL string, expectedSHA256 string) error {
+// downloadBinary fetches the new binary, verifies its SHA-256, and returns the
+// path of a temp file holding it. The platform's ApplyUpdate decides how to
+// install it (Linux renames over the running exe; Windows stages a `.new` and
+// swaps via the helper once the service stops).
+func downloadBinary(downloadURL string, expectedSHA256 string) (string, error) {
 	resp, err := http.Get(downloadURL)
 	if err != nil {
-		return fmt.Errorf("http fetch failed: %w", err)
+		return "", fmt.Errorf("http fetch failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected http status: %s", resp.Status)
+		return "", fmt.Errorf("unexpected http status: %s", resp.Status)
 	}
 
 	tmpFile, err := os.CreateTemp("", "theta-agent-update-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
@@ -678,32 +644,18 @@ func downloadAndUpdateBinary(downloadURL string, expectedSHA256 string) error {
 
 	if _, err := io.Copy(writer, resp.Body); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("failed to save binary: %w", err)
+		return "", fmt.Errorf("failed to save binary: %w", err)
 	}
 	tmpFile.Close()
 
 	actualSHA256 := fmt.Sprintf("%x", hasher.Sum(nil))
 	if !strings.EqualFold(actualSHA256, strings.TrimSpace(expectedSHA256)) {
-		return fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
+		return "", fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
 	}
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("failed to set executable permissions: %w", err)
+		return "", fmt.Errorf("failed to set executable permissions: %w", err)
 	}
 
-	selfPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to resolve current binary path: %w", err)
-	}
-
-	resolvedPath, err := filepath.EvalSymlinks(selfPath)
-	if err == nil {
-		selfPath = resolvedPath
-	}
-
-	if err := os.Rename(tmpPath, selfPath); err != nil {
-		return fmt.Errorf("failed to replace binary: %w", err)
-	}
-
-	return nil
+	return tmpPath, nil
 }

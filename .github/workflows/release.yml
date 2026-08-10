@@ -1,0 +1,143 @@
+name: release
+
+# Builds every theta-agent binary on GitHub and attaches them to the release as
+# artifacts (DESIGN-WINDOWS.md §9, and the "host binaries as release artifacts"
+# decision): the agent for linux/windows/darwin, the tray for linux/windows,
+# the session helper for windows, and the fully-offline Inno setup.exe. Nothing
+# binary is committed to the repo; consumers (install.sh, the SSO Install Agent
+# modal) download from releases/latest/download/<artifact>.
+#
+#   git tag v2.1.0 && git push origin v2.1.0
+#     -> builds all binaries, compiles the installer, attaches everything
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.22.2"
+
+jobs:
+  build-agent:
+    name: agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: theta-agent-linux-amd64
+          - goos: linux
+            goarch: arm64
+            artifact: theta-agent-linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+            artifact: theta-agent-linux-armv7
+          - goos: windows
+            goarch: amd64
+            artifact: theta-agent-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            artifact: theta-agent-windows-arm64.exe
+          - goos: darwin
+            goarch: amd64
+            artifact: theta-agent-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            artifact: theta-agent-darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        shell: bash
+        run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} GOARM=${{ matrix.goarm }} \
+            go build -ldflags="-s -w" -o dist/${{ matrix.artifact }} .
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  build-desktop:
+    name: tray/helper/setup
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # One idempotent script: installs per-user Inno Setup, fetches the
+      # checksum-verified vendor assets, builds agent/tray/helper for windows
+      # amd64+arm64, runs go test, and compiles the offline setup.exe.
+      - name: Build windows artifacts + installer
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-build-env.ps1 -SkipGo -Build -CI
+          if ($LASTEXITCODE -ne 0) { throw "setup-build-env failed" }
+
+      - name: Upload windows desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop
+          path: |
+            dist/theta-agent-tray-windows-*.exe
+            dist/theta-agent-helper-windows-*.exe
+            dist/theta-agent-*-setup.exe
+          if-no-files-found: error
+
+  publish:
+    name: Attach to GitHub release
+    needs: [build-agent, build-desktop]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Optional Azure Trusted Signing (OIDC federation). Signs only Windows PE
+      # files (Authenticode applies to PE/MSI; the linux/darwin binaries are
+      # already self-identifying). Runs only when the Azure secrets exist;
+      # otherwise the artifacts ship unsigned.
+      - name: Sign with Azure Trusted Signing
+        if: env.AZURE_TENANT_ID != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: AzureSignTool
+        if: env.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.4.0
+        with:
+          endpoint: ${{ secrets.AZURE_TS_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_TS_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_TS_CERT_PROFILE }}
+          files: |
+            dist/*.exe
+
+      # Hash AFTER signing so SHA256SUMS matches what ships.
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          fail_on_unmatched_files: false

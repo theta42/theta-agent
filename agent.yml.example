@@ -1,5 +1,5 @@
 # theta-agent configuration file
-# Default location: /etc/theta42/agent.yml
+# Default location: /etc/theta42/agent.yml (Linux) or %ProgramData%\Theta42\agent.yml (Windows)
 
 server_url: "https://sso.example.com"
 
@@ -26,33 +26,53 @@ public_key: ""
 
 location: "default" # Location identifier (e.g., site, datacenter) for naming
 
-# Local LDAP byte-pump socket (DESIGN.md §4). The agent forwards raw LDAP bytes
+# Local LDAP byte-pump socket (DESIGN.md ??4). The agent forwards raw LDAP bytes
 # from this socket to the SSO, which relays them into its OpenLDAP. The agent
 # never parses LDAP. Point SSSD at it with:
 #   ldap_uri = ldapi://%2frun%2ftheta%2fldap.sock
+# (Windows relies on the TCP loopback listener 127.0.0.1:389 instead.)
 ldap_socket: "/run/theta/ldap.sock"
+
+# Auto-connect the WireGuard tunnel when this host is away from home and the
+# directory WebSocket is up. The tray checkbox persists here too.
+auto_vpn: false
+
+# Windows-specific (DESIGN-WINDOWS.md ??11). Ignored on Linux.
+service_name: "theta-agent"            # Windows service name
+desktop_helper: ""                     # theta-agent-helper.exe path (session-0 ops)
+public_ip_detect: true                 # false = air-gap: never call external IP services
+
+# WireGuard mesh client (DESIGN-WINDOWS.md ??5). The signed wireguard_apply
+# command pushes the peer config down the WSS channel; these are local paths.
+wireguard:
+  tunnel_name: "theta-mesh"
+  conf: ""                             # "" = platform default (/etc/wireguard/... or %ProgramData%\Theta42\wg\...)
+  executable: ""                       # wireguard.exe path (Windows; "" = PATH/default install)
 
 capabilities:
   # ---------------------------------------------------------
   # Basic Capabilities (Safe, read-only or infrastructure management)
   # ---------------------------------------------------------
 
-  # Push CPU, RAM, GPU, and ZFS metrics to the SSO Manager
+  # Push CPU, RAM, GPU, and ZFS metrics to Theta Directory
   telemetry: true
 
-  # Allow the SSO Manager to push down SSSD and SSH keys configuration
+  # Allow Theta Directory to push down SSSD and SSH keys configuration
   configure_ldap: true
 
-  # Serve the local LDAP byte-pump socket for SSSD/PAM (DESIGN.md §4)
+  # Serve the local LDAP byte-pump socket for SSSD/PAM (DESIGN.md ??4)
   ldap_tunnel: true
 
-  # Render OpenBao secrets to local files from /etc/theta/templates (DESIGN.md §5)
+  # Render OpenBao secrets to local files from /etc/theta/templates (DESIGN.md ??5)
   secrets: true
 
-  # Apply node IAM (sudo rules, SSH keys, access control, revocation) (DESIGN.md §6)
+  # Apply node IAM (sudo rules, SSH keys, access control, revocation) (DESIGN.md ??6)
   iam: true
 
-# Secret templates to render (DESIGN.md §5). Each maps a local template to a
+  # Accept signed wireguard_apply/wireguard_remove commands (DESIGN-WINDOWS.md ??5)
+  wireguard: false
+
+# Secret templates to render (DESIGN.md ??5). Each maps a local template to a
 # target file and an optional post-render reload. The template embeds secrets as
 # {{ bao "secret/data/nodes/<node-id>/<name>#<key>" }}.
 # secrets:
@@ -64,7 +84,7 @@ capabilities:
   # Advanced Capabilities (High risk, remote operations)
   # ---------------------------------------------------------
   
-  # Allow remote system reboots via the SSO Manager
+  # Allow remote system reboots via Theta Directory
   reboot: false
   
   # Allow restarting, starting, or stopping specific systemd services.
@@ -73,6 +93,6 @@ capabilities:
   # Setting to true or [] denies all.
   service_control: []
   
-  # CRITICAL: Allow the execution of raw bash scripts sent from the SSO Manager.
+  # CRITICAL: Allow the execution of raw bash scripts sent from Theta Directory.
   # Useful for GitOps deployments, but allows remote code execution.
   arbitrary_bash: false
