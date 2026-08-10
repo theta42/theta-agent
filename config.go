@@ -61,6 +61,16 @@ type Config struct {
 	PublicIPDetect *bool         `yaml:"public_ip_detect"` // false disables external lookups (air-gap)
 	AutoVPN       bool           `yaml:"auto_vpn"`      // auto-connect WireGuard when away
 	WireGuard     WireGuardConfig `yaml:"wireguard"`
+
+	// PreferLocalDirectory opts into mDNS local-discovery (MULTI_SITE_SPEC.md
+	// Appendix B): when a theta-gateway/theta-proxy on the local network
+	// segment announces itself as fronting this agent's ServerURL host, skip
+	// the WAN/relay path and talk to it directly. Off by default -- it
+	// changes name resolution behavior on the host, so it's opt-in, not
+	// automatic. Linux only for now (see local_discovery.go); Windows/macOS
+	// need their own platform-native investigation before this flag does
+	// anything there.
+	PreferLocalDirectory bool `yaml:"prefer_local_directory"`
 }
 
 // DetectPublicIP reports whether the agent may perform external public-IP
