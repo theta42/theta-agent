@@ -21,8 +21,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"log"
 	"net"
 	"os"
@@ -121,7 +124,7 @@ var (
 
 func onReady() {
 	// Initial icon — red until we hear from the daemon.
-	systray.SetIcon(iconRed)
+	systray.SetIcon(toWindowsIcon(iconRed))
 	systray.SetTitle("Theta Agent")
 	systray.SetTooltip("Theta Agent — connecting…")
 
@@ -216,19 +219,20 @@ func streamStatus(conn net.Conn) {
 func updateUI(s TrayStatus) {
 	currentStatus = s
 
-	// Icon color.
+	// Icon color. fyne.io/systray needs .ico on Windows; the PNG icons are
+	// wrapped in an ICO container (Windows Vista+ supports PNG-in-ICO).
+	icon := iconRed
 	switch s.Color {
 	case ColorRed:
-		systray.SetIcon(iconRed)
+		icon = iconRed
 	case ColorYellow:
-		systray.SetIcon(iconYellow)
+		icon = iconYellow
 	case ColorGreen:
-		systray.SetIcon(iconGreen)
+		icon = iconGreen
 	case ColorBlue:
-		systray.SetIcon(iconBlue)
-	default:
-		systray.SetIcon(iconRed)
+		icon = iconBlue
 	}
+	systray.SetIcon(toWindowsIcon(icon))
 
 	// Tooltip.
 	tooltip := s.StatusText
@@ -272,4 +276,101 @@ func sendCmd(cmd TrayCommand) {
 	if err != nil {
 		log.Printf("theta-agent-tray: send command error: %v", err)
 	}
+}
+
+// toWindowsIcon converts PNG bytes into a Windows .ico for fyne.io/systray,
+// which requires .ico content on Windows (LoadImage cannot read PNG-in-ICO).
+// On non-Windows the PNG is returned untouched.
+func toWindowsIcon(pngBytes []byte) []byte {
+	if runtime.GOOS != "windows" {
+		return pngBytes
+	}
+	return pngToIco(pngBytes)
+}
+
+// pngToIco decodes a PNG and re-encodes it as classic BMP (XOR + AND mask)
+// entries at 16/32/48px — the format LoadImage has always supported.
+func pngToIco(pngBytes []byte) []byte {
+	src, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		return pngBytes // give systray the raw bytes; it will log and continue
+	}
+
+	sizes := []int{16, 32, 48}
+	var dir []byte
+	var payload []byte
+	offset := 6 + len(sizes)*16 // ICONDIR + all ICONDIRENTRYs
+
+	// ICONDIR: reserved(2)=0 type(2)=1 count(2)
+	dir = append(dir, 0, 0, 1, 0, byte(len(sizes)), 0)
+
+	for _, s := range sizes {
+		bmp := rgbaToDIB(scaleNearest(src, s, s))
+		dw, dh := byte(s), byte(s)
+		if s >= 256 {
+			dw, dh = 0, 0
+		}
+		entry := []byte{dw, dh, 0, 0, 1, 0, 32, 0}
+		entry = append(entry, putU32le(len(bmp))...)
+		entry = append(entry, putU32le(offset+len(payload))...)
+		dir = append(dir, entry...)
+		payload = append(payload, bmp...)
+	}
+	return append(dir, payload...)
+}
+
+// scaleNearest resizes src to w x h with nearest-neighbour sampling.
+func scaleNearest(src image.Image, w, h int) image.Image {
+	b := src.Bounds()
+	if b.Dx() == w && b.Dy() == h {
+		return src
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		sy := b.Min.Y + y*b.Dy()/h
+		for x := 0; x < w; x++ {
+			sx := b.Min.X + x*b.Dx()/w
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
+	return dst
+}
+
+// rgbaToDIB encodes an image as a 32-bit bottom-up DIB with an all-transparent
+// AND mask — the classic icon bitmap LoadImage understands.
+func rgbaToDIB(img image.Image) []byte {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+
+	hdr := make([]byte, 40)
+	copy(hdr, putU32le(40))              // biSize
+	copy(hdr[4:], putU32le(w))           // biWidth
+	copy(hdr[8:], putU32le(h*2))         // biHeight (XOR + AND)
+	copy(hdr[12:], putU16le(1))          // biPlanes
+	copy(hdr[14:], putU16le(32))         // biBitCount
+	andRow := ((w + 31) / 32) * 4        // AND mask row, padded to 32 bits
+	copy(hdr[20:], putU32le(w*h*4+andRow*h)) // biSizeImage
+
+	xor := make([]byte, w*h*4)
+	for y := 0; y < h; y++ {
+		srcY := b.Min.Y + (h - 1 - y) // DIB rows are bottom-up
+		for x := 0; x < w; x++ {
+			r, g, bl, a := img.At(b.Min.X+x, srcY).RGBA()
+			o := y*w*4 + x*4
+			xor[o+0] = byte(bl >> 8) // B
+			xor[o+1] = byte(g >> 8)  // G
+			xor[o+2] = byte(r >> 8)  // R
+			xor[o+3] = byte(a >> 8)  // A
+		}
+	}
+	and := make([]byte, andRow*h) // all zeros: no transparency holes
+	return append(append(hdr, xor...), and...)
+}
+
+func putU32le(v int) []byte {
+	return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}
+}
+
+func putU16le(v int) []byte {
+	return []byte{byte(v), byte(v >> 8)}
 }
