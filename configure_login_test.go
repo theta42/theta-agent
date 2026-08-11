@@ -100,3 +100,34 @@ func TestEnsureLdapTunnel_CapabilitiesEmpty(t *testing.T) {
 		t.Fatalf("expected ldap_tunnel under empty capabilities, got:\n%s", out)
 	}
 }
+
+func TestEnsureCapability_ConfigureLdap(t *testing.T) {
+	doc := "server_url: x\ncapabilities:\n  telemetry: true\n  configure_ldap: false\n"
+	out := ensureCapability(doc, "configure_ldap")
+	if !strings.Contains(out, "  configure_ldap: true") {
+		t.Fatalf("expected configure_ldap: true, got:\n%s", out)
+	}
+	if strings.Contains(out, "configure_ldap: false") {
+		t.Fatalf("old value not replaced:\n%s", out)
+	}
+}
+
+func TestParseSSSDBaseDN(t *testing.T) {
+	cfg := `
+[domain/default]
+ldap_search_base = dc=laptop-dev,dc=vm42,dc=us
+ldap_user_search_base = ou=people,dc=laptop-dev,dc=vm42,dc=us
+ldap_group_search_base = ou=groups,dc=laptop-dev,dc=vm42,dc=us
+ldap_sudo_search_base = ou=people,dc=laptop-dev,dc=vm42,dc=us
+`
+	if got := parseSSSDBaseDN(cfg); got != "dc=laptop-dev,dc=vm42,dc=us" {
+		t.Errorf("parseSSSDBaseDN = %q, want dc=laptop-dev,dc=vm42,dc=us", got)
+	}
+	// ldap_user_search_base etc. must not be mistaken for ldap_search_base.
+	if got := parseSSSDBaseDN("ldap_user_search_base = dc=wrong\n"); got != "" {
+		t.Errorf("matched a non-exact search base: %q", got)
+	}
+	if got := parseSSSDBaseDN(""); got != "" {
+		t.Errorf("empty config should yield empty DN, got %q", got)
+	}
+}
