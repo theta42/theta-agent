@@ -4,46 +4,57 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 )
 
-// Linux-only for now (AGENT_LOCAL_DISCOVERY_SPEC.md §3) -- Windows/macOS
-// hosts-file semantics (elevation, DNS caching, whether mDNSResponder should
-// be used instead of hand-rolled hosts edits) need their own platform-native
-// investigation before this mechanism is trusted there.
+// Local-discovery hosts override (AGENT_LOCAL_DISCOVERY_SPEC.md):
+// applyHostsOverride replaces the managed block in the platform hosts file
+// with exactly `entries` (hostname -> IP). Passing an empty map removes the
+// block entirely rather than leaving an empty marker pair, so a host that
+// never discovers anything -- or stops discovering something it used to --
+// leaves the hosts file with no discovery trace at all.
 //
-// var, not const, so tests can point it at a temp file instead of touching
-// the real /etc/hosts.
-var hostsFilePathLinux = "/etc/hosts"
+// Platform specifics live in hosts_override_windows.go / hosts_override_unix.go:
+// the file path, line-ending convention, and any DNS-cache flush needed for a
+// hosts edit to take effect promptly (ipconfig /flushdns on Windows).
+//
+// NOT write-tmp-then-rename: on a real host that's the safer, atomic way to
+// update a file, but the hosts file is frequently a bind mount (every
+// container runtime does this, Docker included) -- confirmed the hard way on
+// Linux: rename() onto a bind-mounted /etc/hosts fails with EBUSY ("device
+// or resource busy"), since you cannot atomically replace a mountpoint.
+// Truncate-and-rewrite in place instead; hostsMu already serializes calls
+// from this process, which is the only writer of the managed block, so the
+// lost atomicity is a real but small tradeoff against a confirmed hard
+// failure. On Windows the same in-place write preserves the file's ACLs,
+// which a rename onto the system hosts file would not.
 
 const hostsBlockBegin = "# BEGIN theta-agent-local-discovery (managed, do not edit by hand)"
 const hostsBlockEnd = "# END theta-agent-local-discovery"
 
 var hostsMu sync.Mutex
 
-// applyHostsOverride replaces the managed block in /etc/hosts with exactly
-// `entries` (hostname -> IP). Passing an empty map removes the block
-// entirely rather than leaving an empty marker pair, so a host that never
-// discovers anything -- or stops discovering something it used to -- leaves
-// hosts file with no discovery trace at all.
+// applyHostsOverride replaces the managed block in the platform hosts file.
 func applyHostsOverride(entries map[string]string) error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("hosts-file override is Linux-only for now (see AGENT_LOCAL_DISCOVERY_SPEC.md §3)")
-	}
 	hostsMu.Lock()
 	defer hostsMu.Unlock()
 
-	existing, err := readLines(hostsFilePathLinux)
+	path := hostsFilePath()
+	eol := hostsEOL()
+
+	existing, err := readLines(path)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", hostsFilePathLinux, err)
+		return fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	kept := make([]string, 0, len(existing))
 	inBlock := false
 	for _, line := range existing {
-		trimmed := strings.TrimSpace(line)
+		// Normalize CRLF away so marker comparison is platform-agnostic and
+		// a CRLF file written back out with hostsEOL() doesn't double up \r.
+		normalized := strings.TrimSuffix(line, "\r")
+		trimmed := strings.TrimSpace(normalized)
 		if trimmed == hostsBlockBegin {
 			inBlock = true
 			continue
@@ -55,7 +66,7 @@ func applyHostsOverride(entries map[string]string) error {
 		if inBlock {
 			continue // drop old managed lines unconditionally; rebuilt below
 		}
-		kept = append(kept, line)
+		kept = append(kept, normalized)
 	}
 
 	// Trim any trailing blank lines the block removal left, then rebuild.
@@ -63,29 +74,23 @@ func applyHostsOverride(entries map[string]string) error {
 		kept = kept[:len(kept)-1]
 	}
 
-	out := strings.Join(kept, "\n")
+	var out strings.Builder
+	out.WriteString(strings.Join(kept, eol))
 	if len(entries) > 0 {
-		out += "\n" + hostsBlockBegin + "\n"
+		out.WriteString(eol + hostsBlockBegin + eol)
 		for host, ip := range entries {
-			out += fmt.Sprintf("%s\t%s\n", ip, host)
+			out.WriteString(fmt.Sprintf("%s\t%s%s", ip, host, eol))
 		}
-		out += hostsBlockEnd + "\n"
+		out.WriteString(hostsBlockEnd + eol)
 	} else {
-		out += "\n"
+		out.WriteString(eol)
 	}
 
-	// NOT write-tmp-then-rename: on a real host that's the safer, atomic
-	// way to update a file, but /etc/hosts is frequently a bind mount
-	// (every container runtime does this, Docker included) -- confirmed the
-	// hard way: rename() onto a bind-mounted /etc/hosts fails with EBUSY
-	// ("device or resource busy"), since you cannot atomically replace a
-	// mountpoint. Truncate-and-rewrite in place instead; hostsMu already
-	// serializes calls from this process, which is the only writer of the
-	// managed block, so the lost atomicity is a real but small tradeoff
-	// against a confirmed hard failure.
-	if err := os.WriteFile(hostsFilePathLinux, []byte(out), 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", hostsFilePathLinux, err)
+	if err := os.WriteFile(path, []byte(out.String()), 0644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
 	}
+
+	flushDNSOnHostsChange()
 	return nil
 }
 

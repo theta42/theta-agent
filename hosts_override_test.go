@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -12,14 +11,6 @@ import (
 
 func withTempHostsFile(t *testing.T, initial string) string {
 	t.Helper()
-	// applyHostsOverride refuses unconditionally on non-Linux (see
-	// hosts_override.go) -- these tests exercise the Linux write path
-	// specifically, so they'd fail for the right reason on the Windows CI
-	// runner if not skipped. Confirmed the hard way: a real CI run failed
-	// here after this was missed.
-	if runtime.GOOS != "linux" {
-		t.Skip("applyHostsOverride is Linux-only; skipping on " + runtime.GOOS)
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hosts")
 	if initial != "" {
@@ -27,9 +18,12 @@ func withTempHostsFile(t *testing.T, initial string) string {
 			t.Fatalf("seeding temp hosts file: %v", err)
 		}
 	}
-	orig := hostsFilePathLinux
-	hostsFilePathLinux = path
-	t.Cleanup(func() { hostsFilePathLinux = orig })
+	// setTestHostsPath redirects the platform hosts path at this temp file and
+	// restores it on cleanup. Runs on every OS: Windows hosts tests use the
+	// real Windows write path (minus the ipconfig flush, which the injected
+	// path suppresses), so this is where the CRLF/Windows behavior is guarded.
+	restore := setTestHostsPath(path)
+	t.Cleanup(restore)
 	return path
 }
 
@@ -91,6 +85,40 @@ func TestApplyHostsOverride_EmptyEntriesRemovesBlockEntirely(t *testing.T) {
 	}
 	if !strings.Contains(s, "127.0.0.1\tlocalhost") {
 		t.Errorf("pre-existing content should survive a full clear, got: %q", s)
+	}
+}
+
+func TestApplyHostsOverride_CRLFWindowsHostsFile(t *testing.T) {
+	// Windows hosts files use CRLF. The rewrite must (a) match the block
+	// markers on a CRLF file, (b) write back with the platform EOL, and (c)
+	// not double up \r\r\n from the read side.
+	path := withTempHostsFile(t, "127.0.0.1\tlocalhost\r\n192.168.1.5\tsomeotherhost\r\n")
+
+	if err := applyHostsOverride(map[string]string{"sso.example.com": "10.0.0.5"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := applyHostsOverride(map[string]string{"sso.example.com": "10.0.0.9"}); err != nil {
+		t.Fatalf("reapply: %v", err)
+	}
+
+	got, _ := os.ReadFile(path)
+	s := string(got)
+	if strings.Contains(s, "\r\r\n") {
+		t.Fatalf("doubled CR detected (CRLF handled wrong): %q", s)
+	}
+	if strings.Contains(s, "10.0.0.5") {
+		t.Errorf("stale override should be replaced on a CRLF file, got: %q", s)
+	}
+	if !strings.Contains(s, "10.0.0.9\tsso.example.com") {
+		t.Errorf("override entry missing on CRLF file, got: %q", s)
+	}
+	if strings.Count(s, hostsBlockBegin) != 1 {
+		t.Errorf("expected exactly one managed block, got: %q", s)
+	}
+	for _, want := range []string{"127.0.0.1\tlocalhost", "192.168.1.5\tsomeotherhost"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("pre-existing content %q was clobbered, got: %q", want, s)
+		}
 	}
 }
 
