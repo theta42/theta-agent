@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Windows LDAP logon via OpenCredential** (`configure-login`) — wires the bundled OpenCredential credential provider to the agent's LDAP byte-pump tunnel (`127.0.0.1:389`, DESIGN-WINDOWS.md §6). It seeds OpenCredential's registry config (`HKLM\SOFTWARE\OpenCredential3`): the LDAP plugin authenticates a directory user by simple-bind as `uid=<user>,ou=people,<base>` and doubles as the gateway, so members of `ldap_admin_group` are granted local `Administrators` on the host; the LocalMachine plugin stays enabled as a fallback so a local admin can never be locked out. It also enables the `ldap_tunnel` capability in `agent.yml`. Runs automatically as a post-install step (OpenCredential's own installer deletes its registry config, so seeding must happen after it) and is re-runnable. Configured via `ldap_base_dn`, `ldap_admin_group`, `ldap_local_admin_group` in `agent.yml`. Until `ldap_base_dn` is set, the tunnel still enables and local logon keeps working.
+
 ### Fixed
 - **Windows discovery/telemetry reported a bogus Unix disk and no logged-in user.** `collectDiskItems` filtered on `/dev/` device prefixes — every Windows drive (`C:`) was skipped, leaving the `/ /` fallback — and `collectLoggedUsers` only knew the Linux `loginctl`/`who`/utmp paths, so the list stayed empty on Windows. Both moved to platform files (`telemetry_collect_linux.go` / `telemetry_collect_windows.go`): Windows now enumerates logical drives (`C:`, NTFS with real usage, optical drives skipped) and lists logged-in users via the WTS API (`wtsapi32`), which is always present — `query.exe` was rejected because it's an RDS tool that doesn't ship on all Windows editions. Verified live: the Directory now shows `wmant` logged in and `C:` with real disk figures.
 
