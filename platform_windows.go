@@ -134,10 +134,34 @@ func setSuspendState() error {
 	return nil
 }
 
-// ConfigureLDAP is not applicable on Windows: directory logon uses the
-// OpenCredential credential provider configured by the installer.
+// ConfigureLDAP wires directory logon on Windows. The Directory pushes the
+// LDAP config (SSSD-style) to agents advertising capabilities.configure_ldap;
+// here we pull the base DN out of it, persist it to agent.yml, and seed the
+// OpenCredential credential provider to authenticate against the agent's local
+// LDAP tunnel (127.0.0.1:389). This is how LDAP details come from the
+// Directory rather than being typed into the installer.
 func (p *windowsPlatformOps) ConfigureLDAP(configData string) error {
-	return fmt.Errorf("configure_ldap is not applicable on Windows; logon is managed by the OpenCredential credential provider")
+	baseDN := parseSSSDBaseDN(configData)
+	if baseDN == "" {
+		return fmt.Errorf("configure_ldap: no ldap_search_base in pushed config")
+	}
+
+	cm := currentCM
+	if cm != nil {
+		// Persist the learned base DN so the config is self-describing and
+		// configure-login can re-seed without waiting for the next push.
+		if raw, err := os.ReadFile(cm.configPath); err == nil {
+			out := setYamlScalar(string(raw), "ldap_base_dn", baseDN)
+			if err := os.WriteFile(cm.configPath, []byte(out), 0600); err == nil {
+				_ = cm.Reload()
+			}
+		}
+	}
+
+	if cm == nil {
+		return seedOpenCredential(baseDN, "admins", "Administrators")
+	}
+	return seedOpenCredentialFromConfig(cm, baseDN)
 }
 
 // ApplyUpdate downloads and verifies the new binary to `<self>.new`, then hands

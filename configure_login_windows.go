@@ -11,26 +11,37 @@ import (
 )
 
 // configureLogin wires the OpenCredential credential provider to this host's
-// agent LDAP tunnel and enables the tunnel in agent.yml. Run once after the
-// OpenCredential installer (its installer deletes these registry keys), and
-// re-runnable for idempotent re-seeding.
+// agent LDAP tunnel and enables the LDAP capabilities in agent.yml. Re-runnable
+// for idempotent re-seeding.
 //
-// Requires ldap_base_dn in agent.yml; without it the tunnel is still enabled
-// and the LocalMachine fallback keeps working, but directory logon stays
-// unconfigured until ldap_base_dn is set and configure-login is re-run.
+// The LDAP details (base DN) deliberately come from the Directory, not the
+// operator: the agent advertises capabilities.configure_ldap, the Directory
+// pushes the LDAP config, and ConfigureLDAP seeds OpenCredential automatically.
+// configure-login only needs to seed immediately when an operator has set
+// ldap_base_dn in agent.yml directly; otherwise it just makes sure the
+// capabilities are on and lets the Directory push do the rest.
 func configureLogin(cm *ConfigManager) error {
 	cfg := cm.Get()
 
-	// 1. Turn on the LDAP byte-pump so 127.0.0.1:389 exists for OpenCredential.
-	if err := persistLdapTunnelEnabled(cm); err != nil {
-		return fmt.Errorf("enable ldap_tunnel: %w", err)
+	// 1. Advertise the LDAP capabilities so the tunnel runs and the Directory
+	// knows to push the LDAP config. ldap_tunnel is implied by configure_ldap
+	// in the loader, but be explicit.
+	if err := persistLdapCapabilities(cm); err != nil {
+		return fmt.Errorf("enable LDAP capabilities: %w", err)
 	}
 
-	// 2. Seed the OpenCredential registry configuration.
 	baseDN := cfg.LdapBaseDN
 	if baseDN == "" {
-		return fmt.Errorf("ldap_base_dn is empty in %s: set it (e.g. dc=example,dc=com) and re-run configure-login", cm.configPath)
+		log.Printf("configure-login: no ldap_base_dn in %s yet — it will be applied when the Directory pushes the LDAP config (capabilities.configure_ldap is now enabled)", cm.configPath)
+		return nil
 	}
+	return seedOpenCredentialFromConfig(cm, baseDN)
+}
+
+// seedOpenCredentialFromConfig seeds OpenCredential using the given base DN and
+// the admin-group overrides from agent.yml (defaults: admins -> Administrators).
+func seedOpenCredentialFromConfig(cm *ConfigManager, baseDN string) error {
+	cfg := cm.Get()
 	adminGroup := cfg.LdapAdminGroup
 	if adminGroup == "" {
 		adminGroup = "admins"
@@ -39,20 +50,22 @@ func configureLogin(cm *ConfigManager) error {
 	if localAdmin == "" {
 		localAdmin = "Administrators"
 	}
+	if err := seedOpenCredential(baseDN, adminGroup, localAdmin); err != nil {
+		return err
+	}
+	log.Printf("configure-login: OpenCredential seeded (LDAP 127.0.0.1:389, base_dn=%s, %q -> %q)", baseDN, adminGroup, localAdmin)
+	return nil
+}
 
+// seedOpenCredential writes the OpenCredential registry configuration for
+// directory logon against the agent's loopback LDAP tunnel.
+func seedOpenCredential(baseDN, adminGroup, localAdminGroup string) error {
 	root, _, err := registry.CreateKey(registry.LOCAL_MACHINE, openCredentialRoot, registry.CREATE_SUB_KEY|registry.SET_VALUE)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", openCredentialRoot, err)
 	}
 	defer root.Close()
-
-	if err := writeRegValues(root, openCredentialValues(baseDN, adminGroup, localAdmin)); err != nil {
-		return err
-	}
-
-	log.Printf("configure-login: OpenCredential seeded (LDAP 127.0.0.1:389, base_dn=%s, admin group %q -> %q)", baseDN, adminGroup, localAdmin)
-	log.Printf("configure-login: ldap_tunnel enabled in %s — restart the agent service to start the listener", cm.configPath)
-	return nil
+	return writeRegValues(root, openCredentialValues(baseDN, adminGroup, localAdminGroup))
 }
 
 // writeRegValues writes a set of values under root, creating sub-keys as
@@ -84,14 +97,15 @@ func writeRegValues(root registry.Key, vals []regValue) error {
 	return nil
 }
 
-// persistLdapTunnelEnabled flips capabilities.ldap_tunnel on in agent.yml and
-// reloads the live config.
-func persistLdapTunnelEnabled(cm *ConfigManager) error {
+// persistLdapCapabilities turns on capabilities.configure_ldap and
+// capabilities.ldap_tunnel in agent.yml and reloads the live config.
+func persistLdapCapabilities(cm *ConfigManager) error {
 	raw, err := os.ReadFile(cm.configPath)
 	if err != nil {
 		return err
 	}
-	out := ensureLdapTunnel(string(raw))
+	out := ensureCapability(string(raw), "configure_ldap")
+	out = ensureCapability(out, "ldap_tunnel")
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
 		return err
 	}

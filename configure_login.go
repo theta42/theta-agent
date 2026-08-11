@@ -88,16 +88,33 @@ func openCredentialValues(baseDN, adminGroup, localAdminGroup string) []regValue
 // document so the byte-pump listens on 127.0.0.1:389 for OpenCredential.
 // Line-based, like the other config edits, so comments/formatting survive.
 func ensureLdapTunnel(doc string) string {
-	re := regexp.MustCompile(`(?m)^(\s*)ldap_tunnel:\s*\w+.*$`)
+	return ensureCapability(doc, "ldap_tunnel")
+}
+
+// ensureCapability flips a boolean capability to true in the config document
+// (creates the capabilities block if absent).
+func ensureCapability(doc, name string) string {
+	re := regexp.MustCompile(`(?m)^(\s*)` + regexp.QuoteMeta(name) + `:\s*\w+.*$`)
 	if re.MatchString(doc) {
-		return re.ReplaceAllString(doc, "${1}ldap_tunnel: true")
+		return re.ReplaceAllString(doc, "${1}"+name+": true")
 	}
 	capRe := regexp.MustCompile(`(?m)^(capabilities:)\s*$`)
 	if capRe.MatchString(doc) {
-		return capRe.ReplaceAllString(doc, "$1\n  ldap_tunnel: true")
+		return capRe.ReplaceAllString(doc, "$1\n  "+name+": true")
 	}
 	if !strings.HasSuffix(doc, "\n") {
 		doc += "\n"
 	}
-	return doc + "capabilities:\n  ldap_tunnel: true\n"
+	return doc + "capabilities:\n  " + name + ": true\n"
+}
+
+// parseSSSDBaseDN extracts the directory LDAP base DN from the configure_ldap
+// payload the Directory pushes (an SSSD-style config). The Directory derives
+// it from its own stack config, so the installer never needs to ask.
+func parseSSSDBaseDN(configData string) string {
+	re := regexp.MustCompile(`(?mi)^\s*ldap_search_base\s*=\s*(\S+)\s*$`)
+	if m := re.FindStringSubmatch(configData); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
 }
