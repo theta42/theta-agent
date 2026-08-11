@@ -241,7 +241,15 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		}
 
 		log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
-		time.Sleep(5 * time.Second)
+		// A local-discovery apply/revert (hosts override + route change) wants
+		// the new resolution path picked up right away rather than after the
+		// full backoff. discoveryChangedCh is drained here only; a change
+		// while still connected takes effect on the next natural reconnect.
+		select {
+		case <-discoveryChangedCh:
+			log.Println("Local-discovery routing changed; reconnecting immediately.")
+		case <-time.After(5 * time.Second):
+		}
 	}
 }
 

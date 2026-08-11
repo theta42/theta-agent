@@ -5,6 +5,16 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Windows mDNS local-discovery** (`hosts_override_windows.go`) — completes the Linux mechanism from v2.1.2 on Windows. The hosts override now runs on Windows: `%SystemRoot%\System32\drivers\etc\hosts` (reachable because the agent runs as a SYSTEM service), CRLF-aware read/write, and `ipconfig /flushdns` after every change so the override takes effect promptly despite the Windows DNS Client cache. Verified by the Windows CI leg, which now runs the real Windows hosts path against a temp file instead of skipping.
+- **Local route pinning** (`local_route.go`, `local_route_windows.go`, `local_route_unix.go`) — the hosts override only fixes *name resolution*; the packet path is decided by the routing table. If the agent's WireGuard mesh tunnel is up with `AllowedIPs` covering the LAN subnet (or a full-tunnel `0.0.0.0/0`), the tunnel route would swallow the direct connection to the discovered LAN IP. Discovery now also pins a `/32` host route for the discovered IP via the owning local interface (`route.exe add ... metric 1` on Windows, `ip route replace` on Linux) and drops it again on revert. This closes a real gap in the shipped Linux path too.
+- **Prompt reconnect on discovery change** — an apply/revert now signals the WebSocket loop, which reconnects immediately (skipping its 5s backoff) so the new resolution/routing is picked up right away.
+
+### Changed
+- `hosts_override.go` split into shared rewrite logic plus platform files; `hosts_override_test.go` no longer skips on non-Linux and covers the CRLF/Windows write path.
+
 ## [v2.1.3] - 2026-08-10
 
 ### Fixed
