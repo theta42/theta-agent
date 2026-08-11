@@ -42,6 +42,7 @@ func StartLocalDiscovery(cm *ConfigManager) {
 
 	log.Printf("[local-discovery] enabled, watching for a local announcement fronting %s", targetHost)
 	currentlyOverridden := false
+	lastIP := ""
 
 	for {
 		ip := findLocalAnnouncement(targetHost)
@@ -50,18 +51,45 @@ func StartLocalDiscovery(cm *ConfigManager) {
 			if err := applyHostsOverride(map[string]string{targetHost: ip}); err != nil {
 				log.Printf("[local-discovery] found %s locally at %s but failed to apply hosts override: %v", targetHost, ip, err)
 			} else {
+				// Pin the packet path too: the hosts override only fixes name
+				// resolution, the route table decides where the packets go.
+				// If the WireGuard mesh tunnel is up with AllowedIPs covering
+				// this LAN subnet, it would swallow the direct connection.
+				if err := applyLocalRoute(ip); err != nil {
+					log.Printf("[local-discovery] found %s locally at %s but failed to pin a direct host route (a WireGuard tunnel may override it): %v", targetHost, ip, err)
+				}
 				log.Printf("[local-discovery] %s announced locally at %s -- routing directly, skipping the relay/WAN path", targetHost, ip)
+				lastIP = ip
 				currentlyOverridden = true
+				notifyDiscoveryChange()
 			}
 		case ip == "" && currentlyOverridden:
 			if err := applyHostsOverride(map[string]string{}); err != nil {
 				log.Printf("[local-discovery] lost local announcement for %s but failed to clear hosts override: %v", targetHost, err)
 			} else {
+				if lastIP != "" {
+					removeLocalRoute(lastIP)
+				}
 				log.Printf("[local-discovery] %s no longer announced locally -- reverting to normal resolution", targetHost)
 				currentlyOverridden = false
+				lastIP = ""
+				notifyDiscoveryChange()
 			}
 		}
 		time.Sleep(mdnsPollInterval)
+	}
+}
+
+// discoveryChangedCh is signaled (non-blocking) whenever a local-discovery
+// apply/revert changes name resolution or routing, so the WebSocket loop can
+// reconnect promptly and pick up the new path instead of waiting out its
+// reconnect backoff.
+var discoveryChangedCh = make(chan struct{}, 1)
+
+func notifyDiscoveryChange() {
+	select {
+	case discoveryChangedCh <- struct{}{}:
+	default:
 	}
 }
 
