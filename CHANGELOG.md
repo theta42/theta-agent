@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Windows discovery/telemetry reported a bogus Unix disk and no logged-in user.** `collectDiskItems` filtered on `/dev/` device prefixes — every Windows drive (`C:`) was skipped, leaving the `/ /` fallback — and `collectLoggedUsers` only knew the Linux `loginctl`/`who`/utmp paths, so the list stayed empty on Windows. Both moved to platform files (`telemetry_collect_linux.go` / `telemetry_collect_windows.go`): Windows now enumerates logical drives (`C:`, NTFS with real usage, optical drives skipped) and lists logged-in users via the WTS API (`wtsapi32`), which is always present — `query.exe` was rejected because it's an RDS tool that doesn't ship on all Windows editions. Verified live: the Directory now shows `wmant` logged in and `C:` with real disk figures.
+
 ### Changed
 - **New tray icon set** (`cmd/icon-gen`, generated `cmd/theta-agent-tray/icons.go`) — the state badges (Red/Yellow/Green/Blue) are now a rounded-square badge with a subtle vertical gradient and a crisp white theta glyph, rendered at 256px with 4x4 supersampling instead of the old flat 48px circle. Windows gets a proper multi-size ICO (16/24/32/48/64/128/256) built with an exact box filter (was nearest-neighbour over three sizes), so the tray/taskbar icon is sharp at every DPI.
 - **Start menu / installer icon** — `installer/windows/theta-agent.ico` (multi-size, Blue badge) is bundled by the installer and used for the Start menu "Theta Agent Tray" shortcut, the setup.exe's own icon (`SetupIconFile`), and the uninstaller's display icon.
