@@ -12,7 +12,9 @@ import (
 // mDNS local-discovery (AGENT_LOCAL_DISCOVERY_SPEC.md): when a
 // theta-gateway/theta-proxy on the local network segment announces itself
 // as fronting this agent's own server hostname, skip the relay/WAN path and
-// talk to it directly. Opt-in via Config.PreferLocalDirectory.
+// talk to it directly. Always on: a local announcement is only ever acted on
+// when it fronts this agent's own server_url host, so an absent announcement
+// changes nothing about the agent's behavior.
 //
 // HARD RULE (non-negotiable): this changes WHERE we connect (DNS
 // resolution via /etc/hosts), never WHETHER we trust what answers. Nothing
@@ -27,13 +29,10 @@ const mdnsPollInterval = 30 * time.Second
 const mdnsLookupTimeout = 3 * time.Second
 
 // StartLocalDiscovery runs until the process exits. No-op (logs once, then
-// returns) if the feature isn't enabled or the target host can't be
-// determined -- callers just `go StartLocalDiscovery(cm)` unconditionally.
+// returns) if the target host can't be determined -- callers just
+// `go StartLocalDiscovery(cm)` unconditionally.
 func StartLocalDiscovery(cm *ConfigManager) {
 	cfg := cm.Get()
-	if !cfg.PreferLocalDirectory {
-		return
-	}
 	targetHost := hostFromURL(cfg.ServerURL)
 	if targetHost == "" {
 		log.Printf("[local-discovery] could not parse a hostname out of server_url %q -- disabled", cfg.ServerURL)
