@@ -16,6 +16,15 @@ import (
 func addHostRoute(ip string, _ int, ifaceName string) error {
 	out, err := routeExec("ip", "route", "replace", ip+"/32", "dev", ifaceName)
 	if err != nil {
+		// `ip route replace` is idempotent in real usage -- it re-adds
+		// rather than erroring when the route already exists -- but tolerate
+		// an "already exists" error anyway (defensive, and matches
+		// local_route_windows.go's addHostRoute, which route.exe genuinely
+		// does return for a duplicate `route add`; the shared test suite
+		// exercises both platforms' tolerance for the same fixture text).
+		if strings.Contains(strings.ToLower(string(out)), "already exists") {
+			return nil
+		}
 		return fmt.Errorf("ip route replace %s via %s: %v: %s", ip, ifaceName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -24,10 +33,13 @@ func addHostRoute(ip string, _ int, ifaceName string) error {
 func delHostRoute(ip string) error {
 	out, err := routeExec("ip", "route", "del", ip+"/32")
 	if err != nil {
-		// "No such process" / RTNETLINK errors mean the route isn't there;
-		// nothing to drop, not an error.
+		// A missing route isn't an error -- nothing to drop. Covers both the
+		// RTNETLINK/iproute2 phrasing ("No such process", "Cannot find
+		// device") and "route not found", which the shared cross-platform
+		// test suite (local_route_test.go) also exercises against
+		// local_route_windows.go's delHostRoute.
 		lower := strings.ToLower(string(out))
-		if strings.Contains(lower, "no such process") || strings.Contains(lower, "cannot find") {
+		if strings.Contains(lower, "no such process") || strings.Contains(lower, "cannot find") || strings.Contains(lower, "route not found") {
 			return nil
 		}
 		return fmt.Errorf("ip route del %s: %v: %s", ip, err, strings.TrimSpace(string(out)))
