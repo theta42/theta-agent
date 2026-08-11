@@ -92,12 +92,10 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; VC++ v14 runtime (OpenCredential native deps).
 Filename: "{app}\vendor\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing VC++ runtime..."; Flags: runhidden waituntilterminated
-; OpenCredential credential provider ??? must be registered before logon.
+; OpenCredential credential provider ??? must be registered before logon. The
+; agent seeds its config when the Directory pushes the LDAP settings (the SSO
+; checkbox writes capabilities.configure_ldap, which triggers that push).
 Filename: "{app}\vendor\OpenCredentialInstaller-1.0.0.0.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"; StatusMsg: "Installing OpenCredential credential provider..."; Flags: runhidden waituntilterminated
-; Point OpenCredential at the agent's LDAP tunnel (127.0.0.1:389) and enable
-; the tunnel. Requires ldap_base_dn in agent.yml; without it the LocalMachine
-; fallback still works and configure-login can be re-run later.
-Filename: "{app}\{#MyAppExeName}"; Parameters: "configure-login"; StatusMsg: "Configuring LDAP logon (OpenCredential)..."; Flags: runhidden waituntilterminated
 ; WireGuard for Windows client.
 Filename: "msiexec.exe"; Parameters: "/i ""{app}\vendor\wireguard-amd64-0.5.3.msi"" /qn /norestart"; StatusMsg: "Installing WireGuard client..."; Flags: runhidden waituntilterminated
 ; The WireGuard client launches its UI at the end of the MSI; close it ??? the
@@ -118,10 +116,25 @@ var
   PublicKey: String;
   B64Config: String;
 
+  SsoLogon: Boolean;
+  LocalDiscovery: Boolean;
+  CapTelemetry: Boolean;
+  CapWireGuard: Boolean;
+  CapReboot: Boolean;
+
   AgentConfigPage: TWizardPage;
   ServerURLEdit: TNewEdit;
   JoinKeyEdit: TNewEdit;
   OpenSSOButton: TNewButton;
+
+  FeaturesPage: TWizardPage;
+  SsoCheck: TNewCheckBox;
+  DiscoveryCheck: TNewCheckBox;
+
+  OptionsPage: TWizardPage;
+  TelemetryCheck: TNewCheckBox;
+  WireGuardCheck: TNewCheckBox;
+  RebootCheck: TNewCheckBox;
 
 // Reads a custom setup command-line parameter (e.g. /SERVER_URL=https://...).
 // {param:...} raises when the parameter is absent, so the exception becomes "".
@@ -134,6 +147,23 @@ begin
   end;
 end;
 
+// Boolean command-line parameter with a default for when it is absent.
+function CmdBool(const Name: String; const Def: Boolean): Boolean;
+begin
+  case LowerCase(GetCmdParam(Name)) of
+    '1', 'true', 'yes', 'on': Result := True;
+    '0', 'false', 'no', 'off': Result := False;
+  else
+    Result := Def;
+  end;
+end;
+
+// 'true'/'false' for YAML booleans (Inno has no BoolToStr for these).
+function BStr(const B: Boolean): String;
+begin
+  if B then Result := 'true' else Result := 'false';
+end;
+
 function InitializeSetup(): Boolean;
 begin
   ServerURL := GetCmdParam('SERVER_URL');
@@ -141,6 +171,13 @@ begin
   AuthToken := GetCmdParam('AUTH_TOKEN');
   PublicKey := GetCmdParam('PUBLIC_KEY');
   B64Config := GetCmdParam('B64_CONFIG');
+
+  SsoLogon := CmdBool('SSO_LOGON', False);
+  LocalDiscovery := CmdBool('LOCAL_DISCOVERY', False);
+  CapTelemetry := CmdBool('TELEMETRY', True);
+  CapWireGuard := CmdBool('WIREGUARD', True);
+  CapReboot := CmdBool('REBOOT', False);
+
   Result := True;
 end;
 
@@ -217,9 +254,82 @@ begin
   JoinKeyEdit.Text := JoinKey;
 end;
 
+procedure CreateFeaturesPage();
+var
+  InfoLabel: TNewStaticText;
+  Y: Integer;
+begin
+  FeaturesPage := CreateCustomPage(AgentConfigPage.ID,
+    'Directory features',
+    'Choose how this computer connects back to the Directory.');
+
+  InfoLabel := TNewStaticText.Create(FeaturesPage);
+  InfoLabel.Parent := FeaturesPage.Surface;
+  InfoLabel.WordWrap := True;
+  InfoLabel.Width := FeaturesPage.SurfaceWidth;
+  InfoLabel.Height := ScaleY(48);
+  InfoLabel.Caption := 'These can be changed later in the agent configuration and apply after the '
+    + 'service restarts.';
+
+  Y := InfoLabel.Top + InfoLabel.Height + ScaleY(8);
+
+  SsoCheck := TNewCheckBox.Create(FeaturesPage);
+  SsoCheck.Parent := FeaturesPage.Surface;
+  SsoCheck.Top := Y;
+  SsoCheck.Caption := 'Allow sign in on this computer with Directory accounts';
+  SsoCheck.Hint := 'Lets directory users log on at this computer with their directory password (via OpenCredential). Local accounts keep working.';
+  SsoCheck.Checked := SsoLogon;
+
+  DiscoveryCheck := TNewCheckBox.Create(FeaturesPage);
+  DiscoveryCheck.Parent := FeaturesPage.Surface;
+  DiscoveryCheck.Top := SsoCheck.Top + SsoCheck.Height + ScaleY(8);
+  DiscoveryCheck.Caption := 'Use local discovery to find a Directory on this network';
+  DiscoveryCheck.Hint := 'When on the same network as a Directory gateway, skip the WAN path (mDNS local discovery).';
+  DiscoveryCheck.Checked := LocalDiscovery;
+end;
+
+procedure CreateOptionsPage();
+var
+  InfoLabel: TNewStaticText;
+  Y: Integer;
+begin
+  OptionsPage := CreateCustomPage(FeaturesPage.ID,
+    'Agent options',
+    'Choose what this computer is allowed to do.');
+
+  InfoLabel := TNewStaticText.Create(OptionsPage);
+  InfoLabel.Parent := OptionsPage.Surface;
+  InfoLabel.WordWrap := True;
+  InfoLabel.Width := OptionsPage.SurfaceWidth;
+  InfoLabel.Height := ScaleY(32);
+  InfoLabel.Caption := 'Remote actions from the Directory apply immediately; disabling them requires an admin on this computer.';
+
+  Y := InfoLabel.Top + InfoLabel.Height + ScaleY(6);
+
+  TelemetryCheck := TNewCheckBox.Create(OptionsPage);
+  TelemetryCheck.Parent := OptionsPage.Surface;
+  TelemetryCheck.Top := Y;
+  TelemetryCheck.Caption := 'Send usage telemetry (CPU, RAM, disk, logged-in users)';
+  TelemetryCheck.Checked := CapTelemetry;
+
+  WireGuardCheck := TNewCheckBox.Create(OptionsPage);
+  WireGuardCheck.Parent := OptionsPage.Surface;
+  WireGuardCheck.Top := TelemetryCheck.Top + TelemetryCheck.Height + ScaleY(6);
+  WireGuardCheck.Caption := 'Use the WireGuard mesh client';
+  WireGuardCheck.Checked := CapWireGuard;
+
+  RebootCheck := TNewCheckBox.Create(OptionsPage);
+  RebootCheck.Parent := OptionsPage.Surface;
+  RebootCheck.Top := WireGuardCheck.Top + WireGuardCheck.Height + ScaleY(6);
+  RebootCheck.Caption := 'Allow remote reboot and shutdown from the Directory';
+  RebootCheck.Checked := CapReboot;
+end;
+
 procedure InitializeWizard();
 begin
   CreateAgentConfigPage();
+  CreateFeaturesPage();
+  CreateOptionsPage();
 end;
 
 // Pull the values the operator typed into the wizard so WriteAgentConfig can
@@ -230,9 +340,17 @@ end;
 // being shown interactively.
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = AgentConfigPage.ID) and (not WizardSilent()) then begin
+  if WizardSilent() then Exit;
+  if (CurPageID = AgentConfigPage.ID) then begin
     ServerURL := Trim(ServerURLEdit.Text);
     JoinKey := Trim(JoinKeyEdit.Text);
+  end else if (CurPageID = FeaturesPage.ID) then begin
+    SsoLogon := SsoCheck.Checked;
+    LocalDiscovery := DiscoveryCheck.Checked;
+  end else if (CurPageID = OptionsPage.ID) then begin
+    CapTelemetry := TelemetryCheck.Checked;
+    CapWireGuard := WireGuardCheck.Checked;
+    CapReboot := RebootCheck.Checked;
   end;
 end;
 
@@ -270,6 +388,7 @@ procedure WriteAgentConfig(ConfigPath: String);
 var
   Lines: TArrayOfString;
   Decoded: String;
+  AppPath: String;
 begin
   // /B64_CONFIG=<base64 agent.yml> overrides everything (the SSO's Custom Config
   // wizard emits it).
@@ -281,7 +400,10 @@ begin
     Exit;
   end;
 
-  SetArrayLength(Lines, 17);
+  AppPath := ExpandConstant('{app}');
+  StringChangeEx(AppPath, '\', '\\', True);
+
+  SetArrayLength(Lines, 19);
   Lines[0]  := '# theta-agent configuration (written by installer)';
   Lines[1]  := 'server_url: "' + ServerURL + '"';
   Lines[2]  := 'auth_token: "' + AuthToken + '"';
@@ -289,16 +411,18 @@ begin
   Lines[4]  := 'public_key: "' + PublicKey + '"';
   Lines[5]  := 'auto_vpn: false';
   Lines[6]  := 'service_name: "theta-agent"';
-  Lines[7]  := 'desktop_helper: "' + ExpandConstant('{app}') + '\theta-agent-helper-windows-amd64.exe"';
+  Lines[7]  := 'desktop_helper: "' + AppPath + '\\theta-agent-helper-windows-amd64.exe"';
   Lines[8]  := 'public_ip_detect: true';
-  Lines[9]  := 'capabilities:';
-  Lines[10] := '  telemetry: true';
-  Lines[11] := '  ldap_tunnel: true';
-  Lines[12] := '  wireguard: true';
-  Lines[13] := '  secrets: false';
-  Lines[14] := '  iam: false';
-  Lines[15] := '  reboot: false';
-  Lines[16] := '  arbitrary_bash: false';
+  Lines[9]  := 'prefer_local_directory: ' + BStr(LocalDiscovery);
+  Lines[10] := 'capabilities:';
+  Lines[11] := '  telemetry: ' + BStr(CapTelemetry);
+  Lines[12] := '  ldap_tunnel: true';
+  Lines[13] := '  configure_ldap: ' + BStr(SsoLogon);
+  Lines[14] := '  wireguard: ' + BStr(CapWireGuard);
+  Lines[15] := '  secrets: false';
+  Lines[16] := '  iam: false';
+  Lines[17] := '  reboot: ' + BStr(CapReboot);
+  Lines[18] := '  arbitrary_bash: false';
   SaveStringsToUTF8FileWithoutBOM(ConfigPath, Lines, False);
 end;
 
