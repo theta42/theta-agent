@@ -276,6 +276,7 @@ begin
   SsoCheck := TNewCheckBox.Create(FeaturesPage);
   SsoCheck.Parent := FeaturesPage.Surface;
   SsoCheck.Top := Y;
+  SsoCheck.Width := FeaturesPage.SurfaceWidth;
   SsoCheck.Caption := 'Allow sign in on this computer with Directory accounts';
   SsoCheck.Hint := 'Lets directory users log on at this computer with their directory password (via OpenCredential). Local accounts keep working.';
   SsoCheck.Checked := SsoLogon;
@@ -283,6 +284,7 @@ begin
   DiscoveryCheck := TNewCheckBox.Create(FeaturesPage);
   DiscoveryCheck.Parent := FeaturesPage.Surface;
   DiscoveryCheck.Top := SsoCheck.Top + SsoCheck.Height + ScaleY(8);
+  DiscoveryCheck.Width := FeaturesPage.SurfaceWidth;
   DiscoveryCheck.Caption := 'Use local discovery to find a Directory on this network';
   DiscoveryCheck.Hint := 'When on the same network as a Directory gateway, skip the WAN path (mDNS local discovery).';
   DiscoveryCheck.Checked := LocalDiscovery;
@@ -309,18 +311,21 @@ begin
   TelemetryCheck := TNewCheckBox.Create(OptionsPage);
   TelemetryCheck.Parent := OptionsPage.Surface;
   TelemetryCheck.Top := Y;
+  TelemetryCheck.Width := OptionsPage.SurfaceWidth;
   TelemetryCheck.Caption := 'Send usage telemetry (CPU, RAM, disk, logged-in users)';
   TelemetryCheck.Checked := CapTelemetry;
 
   WireGuardCheck := TNewCheckBox.Create(OptionsPage);
   WireGuardCheck.Parent := OptionsPage.Surface;
   WireGuardCheck.Top := TelemetryCheck.Top + TelemetryCheck.Height + ScaleY(6);
+  WireGuardCheck.Width := OptionsPage.SurfaceWidth;
   WireGuardCheck.Caption := 'Use the WireGuard mesh client';
   WireGuardCheck.Checked := CapWireGuard;
 
   RebootCheck := TNewCheckBox.Create(OptionsPage);
   RebootCheck.Parent := OptionsPage.Surface;
   RebootCheck.Top := WireGuardCheck.Top + WireGuardCheck.Height + ScaleY(6);
+  RebootCheck.Width := OptionsPage.SurfaceWidth;
   RebootCheck.Caption := 'Allow remote reboot and shutdown from the Directory';
   RebootCheck.Checked := CapReboot;
 end;
