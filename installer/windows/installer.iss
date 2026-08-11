@@ -94,6 +94,10 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\vendor\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing VC++ runtime..."; Flags: runhidden waituntilterminated
 ; OpenCredential credential provider ??? must be registered before logon.
 Filename: "{app}\vendor\OpenCredentialInstaller-1.0.0.0.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"; StatusMsg: "Installing OpenCredential credential provider..."; Flags: runhidden waituntilterminated
+; Point OpenCredential at the agent's LDAP tunnel (127.0.0.1:389) and enable
+; the tunnel. Requires ldap_base_dn in agent.yml; without it the LocalMachine
+; fallback still works and configure-login can be re-run later.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "configure-login"; StatusMsg: "Configuring LDAP logon (OpenCredential)..."; Flags: runhidden waituntilterminated
 ; WireGuard for Windows client.
 Filename: "msiexec.exe"; Parameters: "/i ""{app}\vendor\wireguard-amd64-0.5.3.msi"" /qn /norestart"; StatusMsg: "Installing WireGuard client..."; Flags: runhidden waituntilterminated
 ; The WireGuard client launches its UI at the end of the MSI; close it ??? the
