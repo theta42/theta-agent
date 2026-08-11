@@ -5,6 +5,15 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.4.0] - 2026-08-11
+
+### Added
+- **"Log in to the Directory and get a join key..." on the wizard's connection page** — the old "open the page" button is now an OAuth-style flow: the installer starts a loopback listener, opens the Directory's `/install-agent/authorize` page, and when the logged-in admin is granted a join key, the Directory redirects back and the installer pre-fills the Server URL + Join Key fields automatically. (Directory side: `/install-agent/authorize` in theta-directory.)
+
+### Changed
+- **Local discovery is now always on** — `prefer_local_directory` was removed from the config (and the wizard); the agent always watches for a local `_theta-suite._tcp` announcement and only ever acts when it fronts the agent's own `server_url` host. The "Use local discovery" wizard checkbox was removed.
+- The connection page's feature description no longer mentions a discovery toggle.
+
 ## [v2.3.0] - 2026-08-10
 
 ### Added

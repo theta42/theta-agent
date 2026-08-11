@@ -117,7 +117,6 @@ var
   B64Config: String;
 
   SsoLogon: Boolean;
-  LocalDiscovery: Boolean;
   CapTelemetry: Boolean;
   CapWireGuard: Boolean;
   CapReboot: Boolean;
@@ -129,12 +128,14 @@ var
 
   FeaturesPage: TWizardPage;
   SsoCheck: TNewCheckBox;
-  DiscoveryCheck: TNewCheckBox;
 
   OptionsPage: TWizardPage;
   TelemetryCheck: TNewCheckBox;
   WireGuardCheck: TNewCheckBox;
   RebootCheck: TNewCheckBox;
+
+const
+  HexChars = '0123456789ABCDEF';
 
 // Reads a custom setup command-line parameter (e.g. /SERVER_URL=https://...).
 // {param:...} raises when the parameter is absent, so the exception becomes "".
@@ -173,7 +174,6 @@ begin
   B64Config := GetCmdParam('B64_CONFIG');
 
   SsoLogon := CmdBool('SSO_LOGON', False);
-  LocalDiscovery := CmdBool('LOCAL_DISCOVERY', False);
   CapTelemetry := CmdBool('TELEMETRY', True);
   CapWireGuard := CmdBool('WIREGUARD', True);
   CapReboot := CmdBool('REBOOT', False);
@@ -181,12 +181,35 @@ begin
   Result := True;
 end;
 
-// Opens the Theta Directory page so the operator can mint a join key right
-// from the wizard. Uses the Server URL they just typed.
+// URL-encode a string for a query parameter (Inno has no built-in).
+function UrlEncode(const S: String): String;
+var
+  i: Integer;
+  b: Byte;
+begin
+  Result := '';
+  for i := 1 to Length(S) do begin
+    b := Ord(S[i]);
+    if ((b >= 48) and (b <= 57)) or ((b >= 65) and (b <= 90)) or
+       ((b >= 97) and (b <= 122)) or (b = 45) or (b = 46) or (b = 95) or (b = 126) then
+      Result := Result + S[i]
+    else
+      Result := Result + '%' + HexChars[(b shr 4) + 1] + HexChars[(b and 15) + 1];
+  end;
+end;
+
+// "Open Theta Directory..." -- an OAuth-style flow. We start a tiny loopback
+// listener, open the Directory's /install-agent/authorize page (which mints a
+// join key for the logged-in admin and redirects to our callback), then read
+// the key back and pre-fill the join-key field. The listener is a PowerShell
+// TcpListener (no URL ACL needed) writing "join_key\nserver_url" to a temp
+// file; the wizard polls for it so the UI is only frozen briefly at the end.
 procedure OnOpenSSOClick(Sender: TObject);
 var
-  Url: String;
+  Url, Callback, OutFile, PortFile, ScriptFile, PortStr, PsScript: String;
   ErrorCode: Integer;
+  Lines: TArrayOfString;
+  Tries: Integer;
 begin
   Url := Trim(ServerURLEdit.Text);
   if Url = '' then begin
@@ -194,8 +217,100 @@ begin
       mbInformation, MB_OK);
     Exit;
   end;
-  if not ShellExec('open', Url, '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode) then
+
+  OutFile := ExpandConstant('{tmp}\ta-callback.txt');
+  PortFile := ExpandConstant('{tmp}\ta-callback.port');
+  DeleteFile(OutFile);
+  DeleteFile(PortFile);
+
+  PsScript :=
+    '$portFile = "PORTFILE"' + #13#10 +
+    '$outFile = "OUTFILE"' + #13#10 +
+    '$l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)' + #13#10 +
+    '$l.Start()' + #13#10 +
+    '$port = ($l.LocalEndpoint).Port' + #13#10 +
+    '[System.IO.File]::WriteAllText($portFile, "$port")' + #13#10 +
+    '$c = $l.AcceptTcpClient()' + #13#10 +
+    '$s = $c.GetStream()' + #13#10 +
+    '$buf = New-Object byte[] 8192' + #13#10 +
+    '$n = $s.Read($buf, 0, 8192)' + #13#10 +
+    '$req = [System.Text.Encoding]::UTF8.GetString($buf, 0, $n)' + #13#10 +
+    '$query = ""' + #13#10 +
+    'if ($req -match "^\\w+\\s+[^?]*\\?([^ ]*)\\s+HTTP") { $query = $matches[1] }' + #13#10 +
+    '$resp = "<html><body style=""font-family:sans-serif;text-align:center;margin-top:80px""><h2>Theta Agent</h2><p>You can close this tab; the installer will continue.</p></body></html>"' + #13#10 +
+    '$bytes = [System.Text.Encoding]::UTF8.GetBytes($resp)' + #13#10 +
+    '$hdr = "HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: " + $bytes.Length + "`r`nConnection: close`r`n`r`n"' + #13#10 +
+    '$hb = [System.Text.Encoding]::UTF8.GetBytes($hdr)' + #13#10 +
+    '$s.Write($hb, 0, $hb.Length)' + #13#10 +
+    '$s.Write($bytes, 0, $bytes.Length)' + #13#10 +
+    '$s.Close(); $c.Close(); $l.Stop()' + #13#10 +
+    '$key = ""; $srv = ""' + #13#10 +
+    'foreach ($part in ($query -split "&")) {' + #13#10 +
+    '  if ($part -match "^([^=]+)=(.*)$") {' + #13#10 +
+    '    $k = [System.Uri]::UnescapeDataString($matches[1])' + #13#10 +
+    '    $v = [System.Uri]::UnescapeDataString($matches[2])' + #13#10 +
+    '    if ($k -eq "join_key") { $key = $v }' + #13#10 +
+    '    if ($k -eq "server_url") { $srv = $v }' + #13#10 +
+    '  }' + #13#10 +
+    '}' + #13#10 +
+    '[System.IO.File]::WriteAllText($outFile, $key + "`n" + $srv)';
+
+  StringChangeEx(PsScript, 'PORTFILE', PortFile, True);
+  StringChangeEx(PsScript, 'OUTFILE', OutFile, True);
+  ScriptFile := ExpandConstant('{tmp}\ta-callback.ps1');
+  if not SaveStringToFile(ScriptFile, PsScript, False) then begin
+    MsgBox('Could not stage the join-key listener script.', mbError, MB_OK);
+    Exit;
+  end;
+
+  if not Exec('powershell.exe',
+      '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptFile + '"',
+      '', SW_HIDE, ewNoWait, ErrorCode) then begin
+    MsgBox('Could not start the join-key listener: ' + SysErrorMessage(ErrorCode), mbError, MB_OK);
+    Exit;
+  end;
+
+  // Wait for the listener to report its port (should be instant), then open
+  // the Directory's authorize page pointing back at it.
+  Tries := 0;
+  while (Tries < 20) and (not FileExists(PortFile)) do begin
+    Sleep(250);
+    Inc(Tries);
+  end;
+  PortStr := '';
+  if FileExists(PortFile) and LoadStringsFromFile(PortFile, Lines) and (GetArrayLength(Lines) >= 1) then
+    PortStr := Trim(Lines[0]);
+  DeleteFile(PortFile);
+  if PortStr = '' then begin
+    MsgBox('Could not determine the join-key listener port.', mbError, MB_OK);
+    Exit;
+  end;
+  Callback := 'http://127.0.0.1:' + PortStr + '/';
+
+  if not ShellExec('open',
+      Url + '/install-agent/authorize?callback=' + UrlEncode(Callback),
+      '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode) then
     MsgBox('Could not open the browser: ' + SysErrorMessage(ErrorCode), mbError, MB_OK);
+
+  // Wait up to 90s for the callback (log in / grant in the browser, then the
+  // page redirects back to our listener). 360 * 250ms.
+  Tries := 0;
+  while Tries < 360 do begin
+    if FileExists(OutFile) then Break;
+    Sleep(250);
+    Inc(Tries);
+  end;
+
+  if FileExists(OutFile) and LoadStringsFromFile(OutFile, Lines) and (GetArrayLength(Lines) >= 2) then begin
+    if Trim(Lines[1]) <> '' then ServerURLEdit.Text := Trim(Lines[1]);
+    if Trim(Lines[0]) <> '' then JoinKeyEdit.Text := Trim(Lines[0]);
+    ServerURL := ServerURLEdit.Text;
+    JoinKey := JoinKeyEdit.Text;
+  end else begin
+    MsgBox('No join key was returned (timed out). You can paste one manually.',
+      mbInformation, MB_OK);
+  end;
+  DeleteFile(OutFile);
 end;
 
 procedure CreateAgentConfigPage();
@@ -237,7 +352,7 @@ begin
   OpenSSOButton.Parent := AgentConfigPage.Surface;
   OpenSSOButton.Top := ServerURLEdit.Top + ServerURLEdit.Height + ScaleY(10);
   OpenSSOButton.Left := ServerURLEdit.Left;
-  OpenSSOButton.Caption := 'Open Theta Directory install-agent page...';
+  OpenSSOButton.Caption := 'Log in to the Directory and get a join key...';
   OpenSSOButton.Width := WizardForm.CalculateButtonWidth([OpenSSOButton.Caption]);
   OpenSSOButton.Height := ScaleY(23);
   OpenSSOButton.OnClick := @OnOpenSSOClick;
@@ -280,14 +395,6 @@ begin
   SsoCheck.Caption := 'Allow sign in on this computer with Directory accounts';
   SsoCheck.Hint := 'Lets directory users log on at this computer with their directory password (via OpenCredential). Local accounts keep working.';
   SsoCheck.Checked := SsoLogon;
-
-  DiscoveryCheck := TNewCheckBox.Create(FeaturesPage);
-  DiscoveryCheck.Parent := FeaturesPage.Surface;
-  DiscoveryCheck.Top := SsoCheck.Top + SsoCheck.Height + ScaleY(8);
-  DiscoveryCheck.Width := FeaturesPage.SurfaceWidth;
-  DiscoveryCheck.Caption := 'Use local discovery to find a Directory on this network';
-  DiscoveryCheck.Hint := 'When on the same network as a Directory gateway, skip the WAN path (mDNS local discovery).';
-  DiscoveryCheck.Checked := LocalDiscovery;
 end;
 
 procedure CreateOptionsPage();
@@ -351,7 +458,6 @@ begin
     JoinKey := Trim(JoinKeyEdit.Text);
   end else if (CurPageID = FeaturesPage.ID) then begin
     SsoLogon := SsoCheck.Checked;
-    LocalDiscovery := DiscoveryCheck.Checked;
   end else if (CurPageID = OptionsPage.ID) then begin
     CapTelemetry := TelemetryCheck.Checked;
     CapWireGuard := WireGuardCheck.Checked;
@@ -408,7 +514,7 @@ begin
   AppPath := ExpandConstant('{app}');
   StringChangeEx(AppPath, '\', '\\', True);
 
-  SetArrayLength(Lines, 19);
+  SetArrayLength(Lines, 18);
   Lines[0]  := '# theta-agent configuration (written by installer)';
   Lines[1]  := 'server_url: "' + ServerURL + '"';
   Lines[2]  := 'auth_token: "' + AuthToken + '"';
@@ -418,16 +524,15 @@ begin
   Lines[6]  := 'service_name: "theta-agent"';
   Lines[7]  := 'desktop_helper: "' + AppPath + '\\theta-agent-helper-windows-amd64.exe"';
   Lines[8]  := 'public_ip_detect: true';
-  Lines[9]  := 'prefer_local_directory: ' + BStr(LocalDiscovery);
-  Lines[10] := 'capabilities:';
-  Lines[11] := '  telemetry: ' + BStr(CapTelemetry);
-  Lines[12] := '  ldap_tunnel: true';
-  Lines[13] := '  configure_ldap: ' + BStr(SsoLogon);
-  Lines[14] := '  wireguard: ' + BStr(CapWireGuard);
-  Lines[15] := '  secrets: false';
-  Lines[16] := '  iam: false';
-  Lines[17] := '  reboot: ' + BStr(CapReboot);
-  Lines[18] := '  arbitrary_bash: false';
+  Lines[9]  := 'capabilities:';
+  Lines[10] := '  telemetry: ' + BStr(CapTelemetry);
+  Lines[11] := '  ldap_tunnel: true';
+  Lines[12] := '  configure_ldap: ' + BStr(SsoLogon);
+  Lines[13] := '  wireguard: ' + BStr(CapWireGuard);
+  Lines[14] := '  secrets: false';
+  Lines[15] := '  iam: false';
+  Lines[16] := '  reboot: ' + BStr(CapReboot);
+  Lines[17] := '  arbitrary_bash: false';
   SaveStringsToUTF8FileWithoutBOM(ConfigPath, Lines, False);
 end;
 
