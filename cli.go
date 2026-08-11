@@ -38,6 +38,9 @@ func handleCLI(args []string) bool {
 	case "remove-service", "uninstall-service":
 		handleServiceCommand(append([]string{"remove"}, args[1:]...))
 		return true
+	case "configure-login":
+		runConfigureLogin(args[1:])
+		return true
 	case "--version", "version", "-v":
 		fmt.Println("Theta Agent " + AgentVersion)
 		return true
@@ -59,11 +62,26 @@ func printUsage() {
 	fmt.Println("  theta-agent reinitialize [flags]   Reset enrollment credentials & re-register")
 	fmt.Println("  theta-agent install-service        (Windows) register the agent as a service")
 	fmt.Println("  theta-agent remove-service         (Windows) unregister the agent service")
+	fmt.Println("  theta-agent configure-login        (Windows) wire OpenCredential to the agent's LDAP tunnel")
 	fmt.Println("  theta-agent version                 Show version info")
 	fmt.Println()
 	fmt.Println("Reinitialize Flags:")
 	fmt.Println("  --join-key <key>                    Supply new join key for re-enrollment")
 	fmt.Println()
+}
+
+func runConfigureLogin(args []string) {
+	configPath := defaultConfigPath()
+	if len(args) > 0 && args[0] != "" && !strings.HasPrefix(args[0], "-") {
+		configPath = args[0]
+	}
+	cm, err := NewConfigManager(configPath)
+	if err != nil {
+		log.Fatalf("configure-login: %v", err)
+	}
+	if err := configureLogin(cm); err != nil {
+		log.Fatalf("configure-login: %v", err)
+	}
 }
 
 func runSelfUpdate(args []string) {

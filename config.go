@@ -71,6 +71,15 @@ type Config struct {
 	// need their own platform-native investigation before this flag does
 	// anything there.
 	PreferLocalDirectory bool `yaml:"prefer_local_directory"`
+
+	// LDAP logon via the bundled OpenCredential credential provider
+	// (DESIGN-WINDOWS.md §6). LdapBaseDN is the directory's LDAP base DN,
+	// used to derive user/group DNs (uid=<user>,ou=people,<base>). Members of
+	// LdapAdminGroup are granted LdapLocalAdminGroup (default Administrators)
+	// on this host at logon.
+	LdapBaseDN          string `yaml:"ldap_base_dn"`
+	LdapAdminGroup      string `yaml:"ldap_admin_group"`
+	LdapLocalAdminGroup string `yaml:"ldap_local_admin_group"`
 }
 
 // DetectPublicIP reports whether the agent may perform external public-IP
