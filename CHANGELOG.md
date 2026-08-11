@@ -5,7 +5,7 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.2.0] - 2026-08-10
 
 ### Added
 - **Windows mDNS local-discovery** (`hosts_override_windows.go`) — completes the Linux mechanism from v2.1.2 on Windows. The hosts override now runs on Windows: `%SystemRoot%\System32\drivers\etc\hosts` (reachable because the agent runs as a SYSTEM service), CRLF-aware read/write, and `ipconfig /flushdns` after every change so the override takes effect promptly despite the Windows DNS Client cache. Verified by the Windows CI leg, which now runs the real Windows hosts path against a temp file instead of skipping.
