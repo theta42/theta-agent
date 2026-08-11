@@ -2,10 +2,12 @@ name: release
 
 # Builds every theta-agent binary on GitHub and attaches them to the release as
 # artifacts (DESIGN-WINDOWS.md §9, and the "host binaries as release artifacts"
-# decision): the agent for linux/windows/darwin, the tray for linux/windows,
+# decision): the agent for linux/windows, the tray for linux/windows,
 # the session helper for windows, and the fully-offline Inno setup.exe. Nothing
 # binary is committed to the repo; consumers (install.sh, the SSO Install Agent
 # modal) download from releases/latest/download/<artifact>.
+# (macOS builds are disabled for now; the agent still cross-compiles for darwin
+# and will be re-enabled when a macOS build/test host is stood up.)
 #
 #   git tag v2.1.0 && git push origin v2.1.0
 #     -> builds all binaries, compiles the installer, attaches everything
@@ -42,12 +44,6 @@ jobs:
           - goos: windows
             goarch: arm64
             artifact: theta-agent-windows-arm64.exe
-          - goos: darwin
-            goarch: amd64
-            artifact: theta-agent-darwin-amd64
-          - goos: darwin
-            goarch: arm64
-            artifact: theta-agent-darwin-arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
