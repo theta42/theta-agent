@@ -5,7 +5,7 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.3.0] - 2026-08-10
 
 ### Added
 - **Windows directory logon (OpenCredential)** — LDAP-backed sign-in is now real and *directory-driven*. The agent advertises `capabilities.configure_ldap`; the Directory pushes its own LDAP settings (it already does for Linux SSSD, derived from `conf.stack.ldapBaseDn`), and on Windows the agent parses the base DN from that push, persists it to `agent.yml`, and seeds the OpenCredential credential provider's registry config (`HKLM\SOFTWARE\OpenCredential3`): the LDAP plugin authenticates a directory user by simple-bind as `uid=<user>,ou=people,<base>` on the agent's loopback tunnel (`127.0.0.1:389`) and acts as the gateway, so members of `ldap_admin_group` (default `admins`) are granted local `Administrators`; the LocalMachine plugin stays enabled as a fallback so a local admin can never be locked out. No LDAP details are typed at install time — they come from the Directory. `configure-login` remains as a manual re-seed tool.
