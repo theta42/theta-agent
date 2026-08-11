@@ -273,8 +273,21 @@ function Invoke-Build {
 
     $iscc = Find-Iscc
     if (-not $iscc) { Write-Fail 'ISCC not found; cannot build installer'; return }
-    Write-Step "Compiling installer with ISCC"
-    & $iscc (Join-Path $RepoRoot 'installer\windows\installer.iss')
+
+    # The installer must not carry a stale hardcoded version: derive it from
+    # the tag on CI (GITHUB_REF_NAME, e.g. "v2.2.0"), else the nearest local
+    # tag, else a plain dev marker. Passed as -DMyAppVersion so
+    # installer.iss's #ifndef default is always overridden by the build.
+    $appVer = '0.0.0-dev'
+    if ($env:GITHUB_REF_NAME -match 'v?([0-9]+\.[0-9]+\.[0-9]+)') {
+        $appVer = $matches[1]
+    } else {
+        $desc = git describe --tags --abbrev=0 2>$null
+        if ($desc -match 'v?([0-9]+\.[0-9]+\.[0-9]+)') { $appVer = $matches[1] }
+    }
+
+    Write-Step "Compiling installer with ISCC (version $appVer)"
+    & $iscc "/DMyAppVersion=$appVer" (Join-Path $RepoRoot 'installer\windows\installer.iss')
     if ($LASTEXITCODE -ne 0) { Write-Fail 'ISCC compile failed' }
 }
 

@@ -5,9 +5,13 @@
 ; runtime. Nothing on the target machine requires internet access.
 ;
 ; Usage:
-;   iscc installer\windows\installer.iss
-;   theta-agent-2.1.0-windows-amd64-setup.exe /SILENT ^
+;   iscc "/DMyAppVersion=2.2.0" installer\windows\installer.iss
+;   theta-agent-2.2.0-windows-amd64-setup.exe /SILENT ^
 ;       /SERVER_URL=https://sso.example.com /JOIN_KEY=tjk_...
+;
+; The version is passed in by scripts/setup-build-env.ps1 (derived from the
+; git tag). The default below exists only so a bare `iscc installer.iss` call
+; still compiles; it should never be the version in a real build.
 ;
 ; Interactively, a wizard page asks for the Theta Directory URL and a join key
 ; (with a button that opens the Theta Directory's Directory -> Install Agent page
@@ -16,7 +20,7 @@
 ; are written into agent.yml so the installed service enrolls on first start.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "2.1.0"
+  #define MyAppVersion "0.0.0-dev"
 #endif
 
 #define MyAppName "Theta Agent"
