@@ -23,8 +23,8 @@ func TestPNGToIco(t *testing.T) {
 		t.Errorf("type must be 1 (icon)")
 	}
 	count := int(ico[4]) | int(ico[5])<<8
-	if count != 3 {
-		t.Fatalf("expected 3 icon entries, got %d", count)
+	if count != len(iconSizes) {
+		t.Fatalf("expected %d icon entries, got %d", len(iconSizes), count)
 	}
 
 	// Each ICONDIRENTRY: valid size, planes=1, bpp=32, DIB with BITMAPINFOHEADER.
@@ -37,6 +37,9 @@ func TestPNGToIco(t *testing.T) {
 		}
 		if h == 0 {
 			h = 256
+		}
+		if w != iconSizes[i] || h != iconSizes[i] {
+			t.Errorf("entry %d: encoded size %dx%d, want %dx%d", i, w, h, iconSizes[i], iconSizes[i])
 		}
 		planes := int(ico[e+4]) | int(ico[e+5])<<8
 		bpp := int(ico[e+6]) | int(ico[e+7])<<8
