@@ -89,8 +89,8 @@ func runAgent() {
 	// Home detection + tray status push (polls public IP every 60s).
 	go StartHomeMonitor(cfg, func() bool { return wsConnected.Load() })
 
-	// mDNS local-discovery (MULTI_SITE_SPEC.md Appendix B) -- no-op unless
-	// prefer_local_directory is set.
+	// mDNS local-discovery (MULTI_SITE_SPEC.md Appendix B) -- always on: a
+	// local announcement is only acted on when it fronts our own server_url.
 	go StartLocalDiscovery(cm)
 
 	// Foreground: exit on SIGINT/SIGTERM. A Windows service ignores these and
