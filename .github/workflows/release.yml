@@ -89,9 +89,44 @@ jobs:
             dist/theta-agent-*-setup.exe
           if-no-files-found: error
 
+  build-tray-linux:
+    # The tray companion (systray) is also Linux: install.sh installs
+    # theta-agent-tray-linux-* when a desktop session is present, and it 404'd
+    # forever because nothing ever shipped it. systray builds fine with
+    # CGO_ENABLED=0 (its Linux backend is DBus), so it is a plain cross-build
+    # like the agent itself -- but it must run on ubuntu, not the
+    # windows-latest job above, and install.sh only downloads linux tray
+    # binaries by exact name.
+    name: tray-linux-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            artifact: theta-agent-tray-linux-amd64
+          - goarch: arm64
+            artifact: theta-agent-tray-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        shell: bash
+        run: |
+          CGO_ENABLED=0 GOARCH=${{ matrix.goarch }} \
+            go build -ldflags="-s -w" -o dist/${{ matrix.artifact }} ./cmd/theta-agent-tray
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
   publish:
     name: Attach to GitHub release
-    needs: [build-agent, build-desktop]
+    needs: [build-agent, build-desktop, build-tray-linux]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
