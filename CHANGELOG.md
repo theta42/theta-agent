@@ -5,6 +5,17 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Release workflow publishes per-platform and independently** — `create-release`
+  shells out the tag's GitHub release first (no build dependencies), then
+  `publish-linux` (agent + tray for linux) and `publish-windows` (agent, tray,
+  helper, installer, Azure-signing) each attach only their own artifacts,
+  gated on their own builds. A Linux build failure can no longer hold up the
+  Windows installer or vice versa. `SHA256SUMS` is computed best-effort after
+  both (over the signed Windows files) and never blocks the run.
+
 ## [v2.5.0] - 2026-08-12
 
 ### Fixed
