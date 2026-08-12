@@ -5,7 +5,7 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.5.1] - 2026-08-12
 
 ### Changed
 - **Release workflow publishes per-platform and independently** — `create-release`
@@ -13,10 +13,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `publish-linux` (agent + tray for linux) and `publish-windows` (agent, tray,
   helper, installer, Azure-signing) each attach only their own artifacts,
   gated on their own builds. A Linux build failure can no longer hold up the
-  Windows installer or vice versa. `SHA256SUMS` is computed best-effort after
-  both (over the signed Windows files) and never blocks the run.
+  Windows installer, or vice versa. SHA256SUMS is generated best-effort
+  afterwards over the signed files.
 
 ## [v2.5.0] - 2026-08-12
+
+### Added
+- **LDAP byte-pump tunnel (`ldap_tunnel` capability + `ldap_socket` config).**
+  The agent serves a local LDAP socket (default `/run/theta/ldap.sock`,
+  root:theta `0660`) and relays raw LDAP bytes to the SSO over the WSS channel;
+  the SSO pipes them into its real OpenLDAP and returns the response. The agent
+  never parses LDAP. Point SSSD at it with
+  `ldap_uri = ldapi://%2frun%2ftheta%2fldap.sock`.
+- **`safeWriter`** — serializes WebSocket writes (Gorilla allows only one
+  concurrent writer; telemetry, heartbeat, the LDAP tunnel and command
+  responses all write to the same socket, and concurrent writes corrupt the
+  stream). On WSS loss the agent closes local socket connections so SSSD falls
+  back to its local cache.
+- **Secrets engine (`secrets` capability + `secrets` config).** Renders local
+  templates embedding OpenBao secrets (`{{ bao "secret/data/nodes/<id>/<name>#<key>" }}`),
+  fetching values from the SSO (the agent never holds a Vault token), rendering
+  each target atomically at `0600`, and running the configured reload. Triggered
+  by a signed `render_secrets` command.
+- **Capability reporting.** The agent reports its enabled capabilities in its
+  `discovery` frame; the SSO stores them and the Directory UI shows them as
+  badges on the host's Metrics tab.
+- **IAM engine (`iam` capability).** The SSO pushes node-scoped identity config
+  as a signed `iam_apply` command; the agent verifies the Ed25519 signature
+  (fail-closed) and applies it locally: sudo rules (`/etc/sudoers.d/theta-iam-<node_id>`,
+  validated with `visudo -c`), SSH keys (`AuthorizedKeysCommand`), access
+  control (`/etc/security/access.conf`), and revocation (flush SSSD cache with
+  `sss_cache -E`, drop sessions with `pkill -u`).
 
 ### Fixed
 - **Re-running the installer with a new join key no longer silently drops it.**
@@ -144,53 +171,6 @@ Windows/macOS local-discovery remain unbuilt — needs platform-native testing (
 
 ### Fixed
 - **SSSD Socket Activation Exit Code 17.** Removed legacy `services` key in generated `sssd.conf` to satisfy modern systemd socket activation requirements.
-
-## [Unreleased] - LDAP byte-pump tunnel (DESIGN.md §4)
-
-The agent now serves a local LDAP socket for SSSD/PAM. It is a **pure byte
-pump**: it forwards raw LDAP bytes to the SSO over the WSS channel, and the SSO
-relays them into its real OpenLDAP and pipes the response back. The agent never
-parses LDAP.
-
-### Added
-- **`ldap_tunnel` capability + `ldap_socket` config.** When enabled, the agent
-  binds a unix socket (default `/run/theta/ldap.sock`, root:theta `0660`) and
-  relays bytes bidirectionally as `ldap_tunnel` messages over the existing WSS
-  channel. Point SSSD at it with `ldap_uri = ldapi://%2frun%2ftheta%2fldap.sock`.
-- **`safeWriter`** — serializes WebSocket writes. Gorilla allows only one
-  concurrent writer, but telemetry, heartbeat, the LDAP tunnel and command
-  responses all write to the same socket; without this, concurrent writes
-  corrupt the stream.
-- **Offline behavior:** when the WSS is down the agent cannot forward bytes, so
-  it closes local socket connections; SSSD sees a connection failure and falls
-  back to its local cache.
-
-### Added — secrets engine (DESIGN.md §5)
-- **`secrets` capability + `secrets` config.** The agent renders local templates
-  that embed OpenBao secrets (`{{ bao "secret/data/nodes/<id>/<name>#<key>" }}`).
-  It parses the placeholders, fetches the values from the SSO (which holds the
-  OpenBao access; the agent never holds a Vault token), renders each target
-  atomically at `0600`, and runs the configured reload. Triggered by a signed
-  `render_secrets` command.
-
-### Added — capability reporting
-- **The agent reports its enabled capabilities in its `discovery` frame.** The
-  SSO stores them and the Directory UI shows them as badges on the host's Metrics
-  tab, so an operator can see at a glance what an agent is allowed to do
-  (telemetry, LDAP tunnel, secrets, IAM, reboot, bash, service control).
-
-### Added — IAM engine (DESIGN.md §6)
-- **`iam` capability.** The SSO pushes node-scoped identity config as a signed
-  `iam_apply` command; the agent verifies the Ed25519 signature (fail-closed) and
-  applies it locally:
-  - **Sudo rules** — writes `/etc/sudoers.d/theta-iam-<node_id>`, validates with
-    `visudo -c`, atomic swap.
-  - **SSH keys** — stores per-user keys and installs the `AuthorizedKeysCommand`
-    script (`/usr/local/bin/theta-authorized-keys`) that sshd calls per login.
-  - **Access control** — writes `/etc/security/access.conf` with allowed login
-    groups.
-  - **Revocation** — flushes the SSSD cache (`sss_cache -E`) and drops active
-    sessions (`pkill -u`) for revoked users.
 
 ## [v1.5.1] - 2026-08-06
 
