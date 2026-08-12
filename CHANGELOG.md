@@ -5,6 +5,24 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.5.0] - 2026-08-12
+
+### Fixed
+- **Re-running the installer with a new join key no longer silently drops it.**
+  When `/etc/theta42/agent.yml` already existed, the `--url`/`--token`/
+  `--join-key`/`--public-key` arguments were discarded entirely, so a host
+  whose config was missing its credential (or that was re-provisioned with a
+  fresh key) stayed unauthenticated forever — the agent logged "No
+  auth_token or join_key in agent.yml" and retried in 5 minutes. The
+  installer now merges exactly the lines the operator supplied into the
+  existing config, leaving everything else untouched.
+- **Linux tray companion shipped for the first time.** `install.sh` installs
+  `theta-agent-tray-linux-*` on desktops, but no release ever contained one —
+  the download 404'd silently (`2>/dev/null`) and no tray icon appeared. The
+  release workflow now builds `theta-agent-tray-linux-amd64` and
+  `-linux-arm64` (`CGO_ENABLED=0`, its Linux backend is DBus), and the
+  installer's tray arch detection no longer hardcodes amd64.
+
 ## [v2.4.0] - 2026-08-11
 
 ### Added
