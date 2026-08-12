@@ -173,6 +173,23 @@ capabilities:
 EOF
 else
   log "Preserving existing configuration at $CONFIG_FILE"
+  # A config that already exists must not be clobbered, but a freshly supplied
+  # --url/--token/--join-key/--public-key must not be silently dropped either:
+  # re-running the installer with a new join key (or repairing a config that
+  # never had one) is exactly when those flags are used. Update just the lines
+  # the operator actually provided, leaving everything else untouched.
+  if [ -n "$URL" ]; then
+    sed -i "s|^server_url:.*|server_url: \"$URL\"|" "$CONFIG_FILE"
+  fi
+  if [ -n "$TOKEN" ]; then
+    sed -i "s|^auth_token:.*|auth_token: \"$TOKEN\"|" "$CONFIG_FILE"
+  fi
+  if [ -n "$JOIN_KEY" ]; then
+    sed -i "s|^join_key:.*|join_key: \"$JOIN_KEY\"|" "$CONFIG_FILE"
+  fi
+  if [ -n "$PUBLIC_KEY" ]; then
+    sed -i "s|^public_key:.*|public_key: \"$PUBLIC_KEY\"|" "$CONFIG_FILE"
+  fi
 fi
 # Ensure theta-secrets & theta groups exist for non-root secret access
 log "Configuring non-root secret access groups (theta-secrets)..."
@@ -193,7 +210,12 @@ chmod 640 "$CONFIG_FILE"
 # 4c. Setup Desktop Tray Icon companion
 TRAY_BINARY_NAME="theta-agent-tray-${OS_NAME}-${ARCH_NAME}"
 case "$OS_NAME" in
-  linux*) TRAY_BINARY_NAME="theta-agent-tray-linux-amd64" ;;
+  linux*)
+    case "$ARCH_NAME" in
+      aarch64|arm64) TRAY_BINARY_NAME="theta-agent-tray-linux-arm64" ;;
+      *) TRAY_BINARY_NAME="theta-agent-tray-linux-amd64" ;;
+    esac
+    ;;
   windows*) TRAY_BINARY_NAME="theta-agent-tray-windows-amd64.exe" ;;
 esac
 TRAY_BIN_PATH="/usr/local/bin/theta-agent-tray"
