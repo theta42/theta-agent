@@ -9,6 +9,11 @@ name: release
 # (macOS builds are disabled for now; the agent still cross-compiles for darwin
 # and will be re-enabled when a macOS build/test host is stood up.)
 #
+# Platforms publish INDEPENDENTLY: a Linux build failure must never hold up the
+# Windows installer (or vice versa). create-release shells out the tag's release
+# first (no build deps), then each publish job attaches only its own platform's
+# artifacts; SHA256SUMS is generated best-effort afterward and never blocks.
+#
 #   git tag v2.1.0 && git push origin v2.1.0
 #     -> builds all binaries, compiles the installer, attaches everything
 
@@ -21,28 +26,61 @@ env:
   GO_VERSION: "1.22.2"
 
 jobs:
-  build-agent:
-    name: agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
+  # Shell out the GitHub release for the tag so the per-platform publish jobs
+  # can attach without racing to create it. Deliberately depends on nothing.
+  create-release:
+    name: Create GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+
+  build-linux:
+    name: agent-linux-${{ matrix.goarch }}${{ matrix.goarm }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
+          - goarch: amd64
             artifact: theta-agent-linux-amd64
-          - goos: linux
-            goarch: arm64
+          - goarch: arm64
             artifact: theta-agent-linux-arm64
-          - goos: linux
-            goarch: arm
+          - goarch: arm
             goarm: "7"
             artifact: theta-agent-linux-armv7
-          - goos: windows
-            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        shell: bash
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} GOARM=${{ matrix.goarm }} \
+            go build -ldflags="-s -w" -o dist/${{ matrix.artifact }} .
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  build-windows-agent:
+    name: agent-windows-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
             artifact: theta-agent-windows-amd64.exe
-          - goos: windows
-            goarch: arm64
+          - goarch: arm64
             artifact: theta-agent-windows-arm64.exe
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +90,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} GOARM=${{ matrix.goarm }} \
+          CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.goarch }} \
             go build -ldflags="-s -w" -o dist/${{ matrix.artifact }} .
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -124,9 +162,38 @@ jobs:
           path: dist/${{ matrix.artifact }}
           if-no-files-found: error
 
-  publish:
-    name: Attach to GitHub release
-    needs: [build-agent, build-desktop, build-tray-linux]
+  publish-linux:
+    name: Publish Linux
+    needs: [create-release, build-linux, build-tray-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: theta-agent-linux-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: theta-agent-tray-linux-*
+          merge-multiple: true
+      # Re-upload for the merged checksums job (linux files ship unchanged).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          fail_on_unmatched_files: false
+
+  publish-windows:
+    name: Publish Windows
+    needs: [create-release, build-windows-agent, build-desktop]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
@@ -136,12 +203,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: theta-agent-windows-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: windows-desktop
           merge-multiple: true
 
       # Optional Azure Trusted Signing (OIDC federation). Signs only Windows PE
-      # files (Authenticode applies to PE/MSI; the linux/darwin binaries are
-      # already self-identifying). Runs only when the Azure secrets exist;
-      # otherwise the artifacts ship unsigned.
+      # files (Authenticode applies to PE/MSI; the linux binaries are already
+      # self-identifying). Runs only when the Azure secrets exist; otherwise
+      # the Windows artifacts ship unsigned.
       - name: Sign with Azure Trusted Signing
         if: env.AZURE_TENANT_ID != ''
         uses: azure/login@v2
@@ -160,15 +233,44 @@ jobs:
           files: |
             dist/*.exe
 
-      # Hash AFTER signing so SHA256SUMS matches what ships.
-      - name: Generate SHA256SUMS
-        shell: bash
-        run: |
-          cd dist
-          sha256sum * | tee SHA256SUMS
+      # Re-upload the SIGNED windows files so SHA256SUMS matches what ships.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/**
+          fail_on_unmatched_files: false
+
+  checksums:
+    name: SHA256SUMS (best-effort)
+    needs: [publish-linux, publish-windows]
+    # always() so a failed platform can't block the checksum of the ones that
+    # shipped; continue-on-error + the empty-dir guard keep this from failing
+    # the run either way.
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+          if-no-files-found: warn
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd dist || exit 0
+          [ -n "$(ls -A .)" ] || exit 0
+          sha256sum * | tee SHA256SUMS
+      - name: Attach checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SHA256SUMS
           fail_on_unmatched_files: false
