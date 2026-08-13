@@ -196,9 +196,25 @@ jobs:
     needs: [create-release, build-windows-agent, build-desktop]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    # Required for the federated credential's subject
+    # (repo:theta42/theta-agent:environment:azure-signing) to match, and to
+    # expose this environment's secrets (AZURE_CLIENT_ID etc, set via
+    # `gh secret set --env azure-signing`) to this job. Azure federated
+    # credentials require an EXACT subject string -- no wildcards -- so a
+    # bare `ref:refs/tags/*` subject can't match every release tag; scoping
+    # to a stable environment name instead of the tag ref is the documented
+    # way to do OIDC federation for a tag-triggered release workflow.
+    environment: azure-signing
     permissions:
       contents: write
       id-token: write
+    # Bare `secrets.X` cannot be used in a step-level `if:` condition, so it
+    # has to be mirrored into `env` first -- this was silently unset before,
+    # which meant the two steps below's `if: env.AZURE_TENANT_ID != ''` was
+    # ALWAYS false and Windows binaries never actually got signed, regardless
+    # of whether the Azure secrets existed.
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -211,11 +227,13 @@ jobs:
           pattern: windows-desktop
           merge-multiple: true
 
-      # Optional Azure Trusted Signing (OIDC federation). Signs only Windows PE
-      # files (Authenticode applies to PE/MSI; the linux binaries are already
-      # self-identifying). Runs only when the Azure secrets exist; otherwise
-      # the Windows artifacts ship unsigned.
-      - name: Sign with Azure Trusted Signing
+      # Optional Azure Trusted/Artifact Signing (OIDC federation, no stored
+      # secret -- azure/login exchanges the job's GitHub OIDC token for an
+      # Azure AD token via the federated credential above). Signs only
+      # Windows PE files (Authenticode applies to PE/MSI; the linux binaries
+      # are already self-identifying). Runs only when the Azure secrets
+      # exist; otherwise the Windows artifacts ship unsigned.
+      - name: Azure login (OIDC)
         if: env.AZURE_TENANT_ID != ''
         uses: azure/login@v2
         with:
@@ -223,7 +241,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: AzureSignTool
+      - name: Sign with Azure Trusted Signing
         if: env.AZURE_TENANT_ID != ''
         uses: azure/trusted-signing-action@v0.4.0
         with:
