@@ -5,6 +5,25 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.8.0] - 2026-08-13
+
+### Added
+- **`theta-agent discover`**: browses `_theta-suite._tcp` on the local
+  network and lists every distinct site announced (site slug, directory
+  URL, version). Read-only — never writes `agent.yml` and is never acted on
+  by the agent daemon itself; a human (or `install.sh`) decides what to do
+  with the result. `--urls-only` prints just `https://<directoryHost>`, one
+  per line; `--json` prints the full announcement list.
+- **`install.sh` auto-discovers `--url`** when `--join-key` is given without
+  it: exactly one site found on the LAN → used automatically; zero or
+  multiple → the operator is told to pass `--url` explicitly rather than
+  guessing. `--token` enrollment still requires `--url` explicitly.
+  Deliberately scoped to a *fresh, unenrolled* agent only — mDNS is
+  unauthenticated, so this only ever changes which site an admin is offered
+  to enroll a brand-new host against, never which directory an
+  already-enrolled agent talks to (see AGENT_LOCAL_DISCOVERY_SPEC.md for why
+  that's a separate, harder problem left deliberately unbuilt).
+
 ## [v2.7.0] - 2026-08-13
 
 ### Fixed

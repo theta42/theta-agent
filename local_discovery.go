@@ -176,6 +176,65 @@ func findLocalAnnouncement(targetHost string) string {
 	return found
 }
 
+// Announcement is one distinct site seen on the local segment, used by the
+// interactive `theta-agent discover` command (cli.go) -- an admin-driven,
+// one-time lookup to find a site's directory hostname without having to
+// already know it. Unlike findLocalAnnouncement (the passive loop above),
+// this is never acted on automatically: it only ever prints candidates for
+// a human (or install.sh, when there's exactly one) to choose from. See
+// AGENT_LOCAL_DISCOVERY_SPEC.md's "fresh/unenrolled agent" case -- the
+// already-enrolled "roaming to a different site" case is deliberately NOT
+// built: mDNS is unauthenticated, and auto-switching which directory an
+// already-trusted agent talks to is a materially bigger blast radius than
+// this always-explicit, always-human-in-the-loop lookup.
+type Announcement struct {
+	Site          string `json:"site"`
+	DirectoryHost string `json:"directoryHost"`
+	DirectoryAddr string `json:"directoryAddr"`
+	Version       string `json:"version"`
+}
+
+// browseAnnouncements does one mDNS query cycle and returns every distinct
+// site seen (deduped by directoryHost), regardless of whether it fronts any
+// hostname this agent already knows about.
+func browseAnnouncements(timeout time.Duration) []Announcement {
+	entriesCh := make(chan *mdns.ServiceEntry, 16)
+	done := make(chan struct{})
+	seen := make(map[string]bool)
+	var found []Announcement
+
+	go func() {
+		for entry := range entriesCh {
+			dhost := txtField(entry, "directoryHost")
+			if dhost == "" || seen[dhost] {
+				continue
+			}
+			seen[dhost] = true
+			found = append(found, Announcement{
+				Site:          txtField(entry, "site"),
+				DirectoryHost: dhost,
+				DirectoryAddr: txtField(entry, "directoryAddr"),
+				Version:       txtField(entry, "version"),
+			})
+		}
+		close(done)
+	}()
+
+	params := mdns.DefaultParams(mdnsServiceName)
+	params.Entries = entriesCh
+	params.Timeout = timeout
+	params.DisableIPv6 = true
+
+	// Same reasoning as findLocalAnnouncement's Query() call: a transient
+	// lookup error (e.g. no multicast-capable interface right now) just
+	// means "nothing found this time", not a fatal condition -- whatever
+	// partial results already arrived on entriesCh are still valid.
+	_ = mdns.Query(params)
+	close(entriesCh)
+	<-done
+	return found
+}
+
 func entryAnnouncesHost(entry *mdns.ServiceEntry, targetHost string) bool {
 	hosts := txtField(entry, "hosts")
 	for _, h := range strings.Split(hosts, ",") {
