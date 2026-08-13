@@ -5,6 +5,32 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.7.0] - 2026-08-13
+
+### Fixed
+- **mDNS local-discovery could route to a Docker bridge IP instead of the
+  directory's real LAN address.** The announcer side (`theta-gateway`'s
+  `mdns_announce.js`) had the same class of bug just fixed in this agent's
+  own telemetry: the underlying mDNS library answers with an address record
+  built from *every* local interface with no filtering, so on the announcing
+  host (which also runs Docker) the response could resolve to a
+  `docker0`/`br-*` bridge gateway address (e.g. `172.18.0.1`) instead of the
+  real LAN IP — reproduced live: "announced locally at 172.18.0.1 ... failed
+  to pin a direct host route: no local interface contains 172.18.0.1".
+
+### Added
+- **The agent now prefers an explicit `directoryAddr` TXT field over the raw
+  mDNS response address.** The announcer computes `directoryAddr` from its
+  own filtered (non-virtual) interfaces and includes it in the
+  `_theta-suite._tcp` TXT record alongside a new `directoryHost`, `site`, and
+  `version` field. When an announcement's `directoryHost` matches the
+  hostname this agent connects to, its `directoryAddr` host is used instead
+  of the mDNS response's own address — correct even if a future mDNS library
+  version regresses the announcer-side interface filter. The site name and
+  suite version are logged when discovered, laying the groundwork for a
+  roaming agent (e.g. a laptop moving between sites) or a fresh install to
+  identify which site's directory it's physically near.
+
 ## [v2.6.1] - 2026-08-13
 
 ### Fixed

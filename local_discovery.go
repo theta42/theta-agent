@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -113,12 +114,34 @@ func findLocalAnnouncement(targetHost string) string {
 
 	go func() {
 		for entry := range entriesCh {
-			if entryAnnouncesHost(entry, targetHost) && found == "" {
-				if entry.AddrV4 != nil {
-					found = entry.AddrV4.String()
-				} else if entry.AddrV6 != nil {
-					found = entry.AddrV6.String()
+			if !entryAnnouncesHost(entry, targetHost) || found != "" {
+				continue
+			}
+			// Prefer the announcer's explicit directoryAddr TXT field
+			// ("<lan-ip>:<port>") over the raw mDNS response address when it
+			// names THIS targetHost as its directoryHost: the announcer
+			// computes that address itself from its real (non-virtual)
+			// interfaces (see jump-host's mdns_announce.js), so it is
+			// correct even on a host where the underlying mDNS library would
+			// otherwise happily answer from a Docker bridge interface. Only
+			// trust it for the directory host specifically -- an
+			// announcement fronting some OTHER hostname in `hosts` (proxy,
+			// jump) has no directoryAddr of its own.
+			if txtField(entry, "directoryHost") == targetHost {
+				if addr := txtField(entry, "directoryAddr"); addr != "" {
+					if host, _, err := net.SplitHostPort(addr); err == nil && host != "" {
+						found = host
+						if site := txtField(entry, "site"); site != "" {
+							log.Printf("[local-discovery] %s is site %q (version %s)", targetHost, site, txtField(entry, "version"))
+						}
+						continue
+					}
 				}
+			}
+			if entry.AddrV4 != nil {
+				found = entry.AddrV4.String()
+			} else if entry.AddrV6 != nil {
+				found = entry.AddrV6.String()
 			}
 		}
 		close(done)
@@ -154,17 +177,23 @@ func findLocalAnnouncement(targetHost string) string {
 }
 
 func entryAnnouncesHost(entry *mdns.ServiceEntry, targetHost string) bool {
-	for _, field := range entry.InfoFields {
-		// TXT format: "hosts=sso.example.com,proxy.example.com"
-		if !strings.HasPrefix(field, "hosts=") {
-			continue
-		}
-		hosts := strings.Split(strings.TrimPrefix(field, "hosts="), ",")
-		for _, h := range hosts {
-			if strings.TrimSpace(h) == targetHost {
-				return true
-			}
+	hosts := txtField(entry, "hosts")
+	for _, h := range strings.Split(hosts, ",") {
+		if strings.TrimSpace(h) == targetHost {
+			return true
 		}
 	}
 	return false
+}
+
+// txtField returns the value of a "key=value" TXT field (mdns_announce.js's
+// hosts/site/directoryHost/directoryAddr/version), or "" if absent.
+func txtField(entry *mdns.ServiceEntry, key string) string {
+	prefix := key + "="
+	for _, field := range entry.InfoFields {
+		if strings.HasPrefix(field, prefix) {
+			return strings.TrimPrefix(field, prefix)
+		}
+	}
+	return ""
 }
