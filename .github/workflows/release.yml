@@ -195,7 +195,14 @@ jobs:
     name: Publish Windows
     needs: [create-release, build-windows-agent, build-desktop]
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    # windows-latest, not ubuntu -- azure/artifact-signing-action has an
+    # explicit runner-OS check baked in and refuses to run on Linux at all
+    # (confirmed the hard way: on ubuntu-latest it doesn't hit that check,
+    # it fails deep inside its PowerShell script with an opaque
+    # "Get-PackageInfo: Cannot bind argument to parameter 'Path'"). Every
+    # other step here (download/upload-artifact, the gh-release attach) is
+    # a JS-based action and runs the same on Windows as on Linux.
+    runs-on: windows-latest
     # Required for the federated credential's subject
     # (repo:theta42/theta-agent:environment:azure-signing) to match, and to
     # expose this environment's secrets (AZURE_CLIENT_ID etc, set via
@@ -227,12 +234,14 @@ jobs:
           pattern: windows-desktop
           merge-multiple: true
 
-      # Optional Azure Trusted/Artifact Signing (OIDC federation, no stored
-      # secret -- azure/login exchanges the job's GitHub OIDC token for an
-      # Azure AD token via the federated credential above). Signs only
-      # Windows PE files (Authenticode applies to PE/MSI; the linux binaries
-      # are already self-identifying). Runs only when the Azure secrets
-      # exist; otherwise the Windows artifacts ship unsigned.
+      # Optional Azure Artifact Signing (OIDC federation, no stored secret --
+      # azure/login exchanges the job's GitHub OIDC token for an Azure AD
+      # token via the federated credential above). Signs only Windows PE
+      # files (Authenticode applies to PE/MSI; the linux binaries are already
+      # self-identifying). Runs only when the Azure secrets exist; otherwise
+      # the Windows artifacts ship unsigned. End-to-end verified 2026-08-13
+      # (test-signing.yml, since deleted): Get-AuthenticodeSignature reported
+      # Status Valid, signer CN="THETA 42, INC.".
       - name: Azure login (OIDC)
         if: env.AZURE_TENANT_ID != ''
         uses: azure/login@v2
@@ -241,15 +250,15 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign with Azure Trusted Signing
+      - name: Sign with Azure Artifact Signing
         if: env.AZURE_TENANT_ID != ''
-        uses: azure/trusted-signing-action@v0.4.0
+        uses: azure/artifact-signing-action@v2
         with:
           endpoint: ${{ secrets.AZURE_TS_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.AZURE_TS_ACCOUNT }}
+          signing-account-name: ${{ secrets.AZURE_TS_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_TS_CERT_PROFILE }}
-          files: |
-            dist/*.exe
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
 
       # Re-upload the SIGNED windows files so SHA256SUMS matches what ships.
       - uses: actions/upload-artifact@v4
