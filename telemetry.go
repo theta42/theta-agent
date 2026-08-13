@@ -308,21 +308,13 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.6.0"
+const AgentVersion = "v2.6.1"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
 	h, _ := host.Info()
 
-	var ips []string
-	addrs, _ := net.InterfaceAddrs()
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ips = append(ips, ipnet.IP.String())
-			}
-		}
-	}
+	ips := collectIPs()
 
 	vm := collectRAMDetails()
 	disks := collectDiskItems()
@@ -745,13 +737,49 @@ func pushTelemetry(c MessageWriter, exec Executor, services []RegisteredService)
 	_ = c.WriteMessage(websocket.TextMessage, payload)
 }
 
+// virtualInterfacePrefixes are container/VM bridge and veth interfaces that
+// never represent how another machine reaches this host. Without this
+// filter, net.InterfaceAddrs() mixes docker0/br-*'s bridge-gateway address
+// in with the real LAN IP with no ordering guarantee, and the directory
+// (which just takes ip_addresses[0]) can end up displaying an unreachable
+// 172.17/172.18.x.x Docker bridge address instead of the host's real IP.
+var virtualInterfacePrefixes = []string{
+	"docker", "br-", "veth", "cni", "flannel", "virbr", "podman", "tun", "tap", "lxcbr", "vnet",
+}
+
+func isVirtualInterfaceName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, p := range virtualInterfacePrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// collectIPs returns this host's non-loopback IPv4 addresses, skipping
+// container/VM bridge interfaces (see isVirtualInterfaceName) so the
+// directory never sees an internal Docker/Podman bridge IP where it expects
+// the host's real, reachable address.
 func collectIPs() []string {
 	var ips []string
-	addrs, _ := net.InterfaceAddrs()
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ips = append(ips, ipnet.IP.String())
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ips
+	}
+	for _, iface := range ifaces {
+		if isVirtualInterfaceName(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					ips = append(ips, ipnet.IP.String())
+				}
 			}
 		}
 	}
