@@ -5,6 +5,25 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.8.1] - 2026-08-13
+
+### Fixed
+- **Windows release binaries are now actually Authenticode-signed.**
+  `release.yml`'s signing step had two bugs that meant it silently never ran
+  on any release regardless of whether Azure credentials existed: the `if:`
+  guard checked a job `env` var that was never populated from the secret,
+  and the action itself (`trusted-signing-action`) has been renamed
+  `azure/artifact-signing-action@v2` with an updated input schema. It also
+  requires a Windows runner specifically — the job ran on `ubuntu-latest`,
+  which fails deep inside the action's PowerShell with an opaque
+  `Get-PackageInfo` error rather than a clear "wrong OS" message. Set up the
+  Azure Artifact Signing account, certificate profile, and GitHub OIDC
+  federation (a GitHub `azure-signing` environment, since Azure federated
+  credentials require an exact subject match with no wildcards and can't
+  match "any tag"), and end-to-end verified the full chain signs a real
+  Windows PE with `Get-AuthenticodeSignature` reporting `Status: Valid`
+  before wiring it into this release.
+
 ## [v2.8.0] - 2026-08-13
 
 ### Added
