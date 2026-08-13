@@ -5,6 +5,19 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.6.1] - 2026-08-13
+
+### Fixed
+- **A host's reported IP could be a Docker/Podman bridge address instead of
+  its real LAN IP.** `ip_addresses` was built from `net.InterfaceAddrs()`,
+  which flattens every interface's addresses together with no filtering —
+  `docker0`, `br-*`, `veth*`, `cni*`, `podman0`, etc. all contributed, and Go
+  gives no ordering guarantee that puts the real NIC first. The directory
+  takes `ip_addresses[0]` as a host's address, so on a Docker/Podman host
+  this could surface an unreachable `172.17/18.x.x` bridge-gateway address
+  instead of the host's actual address. Interfaces matching known
+  container/VM bridge prefixes are now skipped when collecting IPs.
+
 ## [v2.6.0] - 2026-08-12
 
 ### Added
