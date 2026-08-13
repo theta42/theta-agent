@@ -11,15 +11,16 @@ import (
 )
 
 type Capabilities struct {
-	Telemetry      bool     `yaml:"telemetry"`
-	ConfigureLDAP  bool     `yaml:"configure_ldap"`
-	Reboot         bool     `yaml:"reboot"`
-	ServiceControl []string `yaml:"service_control"`
-	ArbitraryBash  bool     `yaml:"arbitrary_bash"`
-	LdapTunnel     bool     `yaml:"ldap_tunnel"`
-	Secrets        bool     `yaml:"secrets"`
-	IAM            bool     `yaml:"iam"`
-	WireGuard      bool     `yaml:"wireguard"`
+	Telemetry           bool     `yaml:"telemetry"`
+	ConfigureLDAP       bool     `yaml:"configure_ldap"`
+	Reboot              bool     `yaml:"reboot"`
+	ServiceControl      []string `yaml:"service_control"`
+	ArbitraryBash       bool     `yaml:"arbitrary_bash"`
+	LdapTunnel          bool     `yaml:"ldap_tunnel"`
+	Secrets             bool     `yaml:"secrets"`
+	IAM                 bool     `yaml:"iam"`
+	WireGuard           bool     `yaml:"wireguard"`
+	ServiceRegistration bool     `yaml:"service_registration"`
 }
 
 // SecretTarget maps a local template to a rendered target file and an optional
@@ -48,19 +49,25 @@ type Config struct {
 	// the server exchanges it for a per-agent AuthToken (written back to this
 	// file), so it is a bootstrap value, not a long-term credential. Used only
 	// when AuthToken is empty.
-	JoinKey      string         `yaml:"join_key"`
-	Location     string         `yaml:"location"`
-	PublicKey    string         `yaml:"public_key"`     // Ed25519 public key for signed commands
-	LdapSocket   string         `yaml:"ldap_socket"`    // local LDAP tunnel socket (DESIGN.md §4)
-	Secrets      []SecretTarget `yaml:"secrets"`        // secret templates to render (DESIGN.md §5)
-	Capabilities Capabilities   `yaml:"capabilities"`
+	JoinKey    string         `yaml:"join_key"`
+	Location   string         `yaml:"location"`
+	PublicKey  string         `yaml:"public_key"`  // Ed25519 public key for signed commands
+	LdapSocket string         `yaml:"ldap_socket"` // local LDAP tunnel socket (DESIGN.md §4)
+	Secrets    []SecretTarget `yaml:"secrets"`     // secret templates to render (DESIGN.md §5)
+	// Services are the services this agent has registered with the directory as
+	// children of its host. Kept in agent.yml so the running daemon knows which
+	// per-service metrics to report without the directory having to push the list
+	// back down. Managed by `theta-agent register <type> <name>` /
+	// `theta-agent unregister <type> <name>`, where <type> is systemd or docker.
+	Services     []RegisteredService `yaml:"services"` // registered child services
+	Capabilities Capabilities        `yaml:"capabilities"`
 
 	// Windows-specific (DESIGN-WINDOWS.md §11).
-	ServiceName string           `yaml:"service_name"` // Windows service name
-	DesktopHelper string         `yaml:"desktop_helper"` // theta-agent-helper.exe path
-	PublicIPDetect *bool         `yaml:"public_ip_detect"` // false disables external lookups (air-gap)
-	AutoVPN       bool           `yaml:"auto_vpn"`      // auto-connect WireGuard when away
-	WireGuard     WireGuardConfig `yaml:"wireguard"`
+	ServiceName    string          `yaml:"service_name"`     // Windows service name
+	DesktopHelper  string          `yaml:"desktop_helper"`   // theta-agent-helper.exe path
+	PublicIPDetect *bool           `yaml:"public_ip_detect"` // false disables external lookups (air-gap)
+	AutoVPN        bool            `yaml:"auto_vpn"`         // auto-connect WireGuard when away
+	WireGuard      WireGuardConfig `yaml:"wireguard"`
 
 	// LDAP logon via the bundled OpenCredential credential provider
 	// (DESIGN-WINDOWS.md §6). LdapBaseDN is the directory's LDAP base DN,
@@ -223,6 +230,164 @@ func (cm *ConfigManager) ClearEnrollment() error {
 	}
 	cm.current = cfg
 	return nil
+}
+
+// RegisteredService is one entry in the `services:` list of agent.yml: the
+// name (systemd unit or docker container) and its type, which the directory
+// uses to pick the right child-resource subtype and the agent to report the
+// right metrics.
+type RegisteredService struct {
+	Name    string `yaml:"name"`
+	SubType string `yaml:"subtype"`
+}
+
+// UnmarshalYAML accepts both the legacy scalar form (`- nginx`) and the object
+// form (`- name: nginx` / `subtype: systemd`) so pre-subtype configs keep
+// loading. A bare string is treated as a systemd service.
+func (s *RegisteredService) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		s.Name = node.Value
+		s.SubType = ""
+		return nil
+	}
+	type raw RegisteredService
+	var r raw
+	if err := node.Decode(&r); err != nil {
+		return err
+	}
+	s.Name = r.Name
+	s.SubType = r.SubType
+	return nil
+}
+
+// SubTypeOr reports the service type, defaulting to "systemd" for legacy
+// entries written before subtypes existed.
+func (s RegisteredService) SubTypeOr(def string) string {
+	if s.SubType != "" {
+		return s.SubType
+	}
+	return def
+}
+
+// PersistService adds (or, when remove is true, removes) a service of the given
+// subtype in the `services:` list in agent.yml. Like the enrollment/auto_vpn
+// edits it is line-based rather than a YAML round-trip so comments and
+// formatting survive, and it reloads the active config so the running daemon
+// picks up the change without a restart.
+func (cm *ConfigManager) PersistService(name, subtype string, remove bool) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	raw, err := os.ReadFile(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", cm.configPath, err)
+	}
+
+	var out string
+	if remove {
+		out, err = removeYamlListItem(string(raw), "services", name)
+	} else {
+		out, err = addYamlListItem(string(raw), "services", name, subtype)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
+		return fmt.Errorf("write %s: %w", cm.configPath, err)
+	}
+
+	cfg, err := LoadConfig(cm.configPath)
+	if err != nil {
+		return fmt.Errorf("reload after service edit: %w", err)
+	}
+	cm.current = cfg
+	return nil
+}
+
+// addYamlListItem appends a new item under the `key:` block. It understands
+// both the inline empty form (`key: []`) and the block form, converting the
+// former into a block. Creates the key when absent, and inserts right after the
+// block's last entry so the item is never misattributed to a following top-level
+// key. When subtype is non-empty the item is written as an object
+// (`- name: <item>` / `  subtype: <subtype>`), otherwise as a plain scalar
+// (`- <item>`). Preserves all other lines verbatim.
+func addYamlListItem(doc, key, item, subtype string) (string, error) {
+	if !strings.HasSuffix(doc, "\n") {
+		doc += "\n"
+	}
+
+	// Build the indented entry (2 spaces under the block key, 4 for nested).
+	entry := "- " + item
+	if subtype != "" {
+		entry = "- name: " + item + "\n    subtype: " + subtype
+	}
+	entry = "  " + entry + "\n"
+
+	// Existing scalar/object item with this name at the top level of the block.
+	itemRe := regexp.MustCompile(`(?m)^[ \t]*-\s*` + regexp.QuoteMeta(item) + `\s*$`)
+	namedRe := regexp.MustCompile(`(?m)^[ \t]*-\s*name:\s*` + regexp.QuoteMeta(item) + `\s*$`)
+	if itemRe.MatchString(doc) || namedRe.MatchString(doc) {
+		return doc, fmt.Errorf("service %q already registered", item)
+	}
+
+	// Inline empty list `key: []` -> convert to a block.
+	inlineEmpty := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(key) + `[ \t]*:\s*\[\s*\]\s*$`)
+	if inlineEmpty.MatchString(doc) {
+		return inlineEmpty.ReplaceAllString(doc, key+":\n"+entry), nil
+	}
+
+	lines := strings.SplitAfter(doc, "\n")
+	keyRe := regexp.MustCompile(`^[ \t]*` + regexp.QuoteMeta(key) + `[ \t]*:\s*$`)
+
+	var blockIndex = -1
+	for i, l := range lines {
+		if keyRe.MatchString(l) {
+			blockIndex = i
+		}
+	}
+	if blockIndex < 0 {
+		// No existing block: append a fresh one at the end.
+		return doc + key + ":\n" + entry, nil
+	}
+
+	// Find the last line of the block: the next top-level (non-space-prefixed)
+	// key after blockIndex, or end of file.
+	end := len(lines)
+	for i := blockIndex + 1; i < len(lines); i++ {
+		if lines[i] != "\n" && !strings.HasPrefix(lines[i], " ") && !strings.HasPrefix(lines[i], "\t") {
+			end = i
+			break
+		}
+	}
+	if end == len(lines) {
+		return doc + entry, nil
+	}
+	// end points at the next top-level line; splice insert before it.
+	return strings.Join(append(lines[:end], append([]string{entry}, lines[end:]...)...), ""), nil
+}
+
+// removeYamlListItem deletes the item (scalar or multi-line object entry) under
+// the `key:` block, if present.
+func removeYamlListItem(doc, key, item string) (string, error) {
+	// Object form: `- name: <item>` optionally followed by its own indented
+	// nested keys (`  subtype: ...`). The continuation must not consume the next
+	// list entry (which starts with `-`).
+	objectRe := regexp.MustCompile(`(?m)^[ \t]*-\s*name:\s*` + regexp.QuoteMeta(item) + `[ \t]*\r?\n(?:[ \t]+[^-\s][^\r\n]*\r?\n)*`)
+	if objectRe.MatchString(doc) {
+		return objectRe.ReplaceAllString(doc, ""), nil
+	}
+
+	// Scalar form: `- <item>`.
+	itemRe := regexp.MustCompile(`(?m)^[ \t]*-\s*` + regexp.QuoteMeta(item) + `[ \t]*\r?\n`)
+	if !itemRe.MatchString(doc) {
+		itemReNoNL := regexp.MustCompile(`(?m)^[ \t]*-\s*` + regexp.QuoteMeta(item) + `[ \t]*$`)
+		if !itemReNoNL.MatchString(doc) {
+			return doc, fmt.Errorf("service %q is not registered", item)
+		}
+		return itemReNoNL.ReplaceAllString(doc, ""), nil
+	}
+	return itemRe.ReplaceAllString(doc, ""), nil
 }
 
 // setYamlScalar replaces the value of a top-level `key: "..."` line, or appends

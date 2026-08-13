@@ -132,6 +132,53 @@ Sent in response to any command received from the server.
   - `message`: (string) Human-readable result or error description.
   - `output`: (string, optional) Stdout/stderr for execution commands.
 
+### 3.5 Telemetry Service Metrics
+
+The periodic `telemetry` frame (sent every 30 seconds) carries an optional
+`services` array reporting the live status of every registered service in the
+agent's `services:` list (see §4.3). Supported `subtype`s: `systemd`, `docker`,
+`podman`, `process`, `systemd-timer`, `cron`, `lxc`, `kvm`/`libvirt`. The
+directory uses it to surface each registered service as a child `service`
+resource of the host and its health.
+
+- **Payload key**: `services` (array of `{ "name": string, "active": bool,
+  "subtype": string, ... }`).
+  Each entry carries live resource usage and state:
+  - `substate`, `load_state` (string): runtime sub/load state.
+  - `cpu_usage_percent` (float): CPU rate over the last ~30s window (`-1` until a
+    second sample exists).
+  - `memory_bytes` (uint64): current RSS (systemd `MemoryCurrent`, docker/podman
+    stats, or process `VmRSS`).
+  - `n_restarts` (uint64): cumulative restart count (0 for `process`, which has
+    no init-managed counter).
+  - `uptime_seconds` (uint64): seconds since start.
+  - `next_run`, `last_run` (string RFC3339): schedule (`systemd-timer`, `cron`).
+  - `triggered_count` (uint64): number of firings observed for a `cron` entry
+    since the agent started (incremented each tick the last-run advances).
+  - `status` (string): VM state (`lxc`, `kvm`/`libvirt`).
+- A service removed from `agent.yml` stops appearing here; the directory drops
+  its child resource on the next reconciliation.
+
+### 3.6 Service Registration (Agent → Server)
+
+The agent declares a service it wants the directory to track as a child of its
+host. Sent by `theta-agent register <type> <name>`. The server answers with a
+`response` frame.
+
+- **Type**: `register_service`
+- **Payload**:
+  - `service`: (string) the unit/container/process/VM/timer name.
+  - `subtype`: (string, optional) `systemd`, `docker`, `podman`, `process`,
+    `systemd-timer`, `cron`, `lxc`, `kvm`/`libvirt`. Defaults to `systemd`.
+
+### 3.7 Service Unregistration (Agent → Server)
+
+Removes a service from the directory's child resource graph.
+
+- **Type**: `unregister_service`
+- **Payload**:
+  - `service`: (string) the service name to remove.
+
 ---
 
 ## 4. Server $\rightarrow$ Client Messages
@@ -173,6 +220,8 @@ These commands **require** an Ed25519 signature in the payload. The agent verifi
 | `update_binary` | `{ "url": "...", "sha256": "...", "signature": "..." }` | Downloads, verifies, and replaces the agent binary. |
 | `render_secrets` | `{ "signature": "..." }` | Renders the configured secret templates to their targets (DESIGN.md §5). |
 | `iam_apply` | `{ "node_id", "revision", "access_control", "signature" }` | Applies node IAM: sudo rules, SSH keys, access control, revocation (DESIGN.md §6). |
+| `register_service` | `{ "service": "...", "subtype": "...", "signature": "..." }` | Registers a systemd service as a child resource of this host (gated by `capabilities.service_registration`). |
+| `unregister_service` | `{ "service": "...", "signature": "..." }` | Removes a registered service's child resource (gated by `capabilities.service_registration`). |
 
 ## 5. Cryptographic Verification Process
 

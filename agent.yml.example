@@ -37,6 +37,17 @@ ldap_socket: "/run/theta/ldap.sock"
 # directory WebSocket is up. The tray checkbox persists here too.
 auto_vpn: false
 
+# Services registered with Theta Directory as children of this host. Managed by
+# `theta-agent register <type> <name>` / `theta-agent unregister <type> <name>`.
+# <type> is one of: systemd, docker, podman, process, systemd-timer, cron, lxc,
+# kvm/libvirt. The daemon reports per-service status in its telemetry stream and
+# the directory creates a `service` resource under this host for each entry.
+# Example (a docker container):
+#   services:
+#     - name: my-web
+#       subtype: docker
+services: []
+
 # mDNS local-discovery (MULTI_SITE_SPEC.md Appendix B): when a
 # theta-gateway/theta-proxy on the local network segment announces itself as
 # fronting this agent's server_url host, skip the relay/WAN path and talk to
@@ -79,6 +90,11 @@ capabilities:
 
   # Accept signed wireguard_apply/wireguard_remove commands (DESIGN-WINDOWS.md ??5)
   wireguard: false
+
+  # Accept signed register_service/unregister_service commands from Theta
+  # Directory (and allow local `theta-agent register` to push changes to it).
+  # Registers systemd services as child resources of this host.
+  service_registration: true
 
 # Secret templates to render (DESIGN.md ??5). Each maps a local template to a
 # target file and an optional post-render reload. The template embeds secrets as

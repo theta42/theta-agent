@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -89,18 +91,46 @@ type DiscoveryData struct {
 }
 
 type TelemetryData struct {
-	CPUUsagePercent  float64      `json:"cpu_usage_percent"`
-	CPUDetails       CPUDetails   `json:"cpu_details"`
-	RAMUsagePercent  float64      `json:"ram_usage_percent"`
-	RAMDetails       RAMDetails   `json:"ram_details"`
-	DiskUsagePercent float64      `json:"disk_usage_percent"`
-	Disks            []DiskItem   `json:"disks"`
-	LoggedUsers      []LoggedUser `json:"logged_users"`
-	HostDetails      HostDetails  `json:"host_details"`
-	Version          string       `json:"version"`
-	ZFSHealth        string       `json:"zfs_health,omitempty"`
-	GPUUsage         float64      `json:"gpu_usage_percent,omitempty"`
-	Timestamp        string       `json:"timestamp"`
+	CPUUsagePercent  float64         `json:"cpu_usage_percent"`
+	CPUDetails       CPUDetails      `json:"cpu_details"`
+	RAMUsagePercent  float64         `json:"ram_usage_percent"`
+	RAMDetails       RAMDetails      `json:"ram_details"`
+	DiskUsagePercent float64         `json:"disk_usage_percent"`
+	Disks            []DiskItem      `json:"disks"`
+	LoggedUsers      []LoggedUser    `json:"logged_users"`
+	HostDetails      HostDetails     `json:"host_details"`
+	Version          string          `json:"version"`
+	ZFSHealth        string          `json:"zfs_health,omitempty"`
+	GPUUsage         float64         `json:"gpu_usage_percent,omitempty"`
+	Services         []ServiceMetric `json:"services,omitempty"`
+	Timestamp        string          `json:"timestamp"`
+}
+
+// ServiceMetric is the per-service status and resource usage reported for each
+// name in the `services:` list of agent.yml. The directory uses it to surface
+// each registered systemd service as a child resource, its health, and its live
+// CPU/RAM footprint.
+//
+// cpu_usage_percent is a rate derived by the agent from two consecutive
+// `systemctl show` CPUUsageNS samples (a raw counter has no meaning without a
+// window). It is -1 until a second sample is available.
+type ServiceMetric struct {
+	Name            string  `json:"name"`
+	Active          bool    `json:"active"`
+	SubState        string  `json:"substate,omitempty"`
+	LoadState       string  `json:"load_state,omitempty"`
+	SubType         string  `json:"subtype,omitempty"`
+	CPUUsagePercent float64 `json:"cpu_usage_percent,omitempty"`
+	CPUUsageNS      int64   `json:"cpu_ns,omitempty"`
+	MemoryCurrent   uint64  `json:"memory_bytes,omitempty"`
+	NRestarts       uint64  `json:"n_restarts,omitempty"`
+	UptimeSeconds   int64   `json:"uptime_seconds,omitempty"`
+	// Schedule semantics used by systemd-timer and cron subtypes.
+	NextRun   string `json:"next_run,omitempty"` // RFC3339, when next scheduled
+	LastRun   string `json:"last_run,omitempty"` // RFC3339, when last ran
+	Triggered uint64 `json:"triggered_count,omitempty"`
+	// VM semantics used by lxc/kvm/libvirt subtypes.
+	Status string `json:"status,omitempty"`
 }
 
 func getPublicIP() string {
@@ -318,38 +348,39 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 	hostDet := collectHostDetails()
 
 	return DiscoveryData{
-		Hostname:     h.Hostname,
-		IPs:          ips,
-		PublicIP:     pubIP,
-		OS:           fmt.Sprintf("%s %s", h.OS, h.Platform),
-		Kernel:       h.KernelVersion,
-		CPUModel:     cpuDet.Model,
-		CPUDetails:   cpuDet,
-		RAMTotalGB:   float64(vm.TotalBytes) / (1024 * 1024 * 1024),
-		RAMDetails:   vm,
-		DiskTotalGB:  diskTotalGB,
-		Disks:        disks,
-		LoggedUsers:  loggedUsers,
-		HostDetails:  hostDet,
-		Version:      AgentVersion,
-		Location:     cfg.Location,
+		Hostname:    h.Hostname,
+		IPs:         ips,
+		PublicIP:    pubIP,
+		OS:          fmt.Sprintf("%s %s", h.OS, h.Platform),
+		Kernel:      h.KernelVersion,
+		CPUModel:    cpuDet.Model,
+		CPUDetails:  cpuDet,
+		RAMTotalGB:  float64(vm.TotalBytes) / (1024 * 1024 * 1024),
+		RAMDetails:  vm,
+		DiskTotalGB: diskTotalGB,
+		Disks:       disks,
+		LoggedUsers: loggedUsers,
+		HostDetails: hostDet,
+		Version:     AgentVersion,
+		Location:    cfg.Location,
 		Capabilities: map[string]interface{}{
-			"telemetry":        cfg.Capabilities.Telemetry,
-			"configure_ldap":   cfg.Capabilities.ConfigureLDAP,
-			"ldap_tunnel":      cfg.Capabilities.LdapTunnel,
-			"secrets":          cfg.Capabilities.Secrets,
-			"iam":              cfg.Capabilities.IAM,
-			"reboot":           cfg.Capabilities.Reboot,
-			"shutdown":         true,
-			"desktop_controls": true,
-			"service_control":  cfg.Capabilities.ServiceControl,
-			"arbitrary_bash":   cfg.Capabilities.ArbitraryBash,
+			"telemetry":            cfg.Capabilities.Telemetry,
+			"configure_ldap":       cfg.Capabilities.ConfigureLDAP,
+			"ldap_tunnel":          cfg.Capabilities.LdapTunnel,
+			"secrets":              cfg.Capabilities.Secrets,
+			"iam":                  cfg.Capabilities.IAM,
+			"reboot":               cfg.Capabilities.Reboot,
+			"shutdown":             true,
+			"desktop_controls":     true,
+			"service_control":      cfg.Capabilities.ServiceControl,
+			"service_registration": cfg.Capabilities.ServiceRegistration,
+			"arbitrary_bash":       cfg.Capabilities.ArbitraryBash,
 		},
 	}
 }
 
 // CollectTelemetryData gathers real-time performance metrics including ZFS and GPU.
-func CollectTelemetryData(exec Executor) TelemetryData {
+func CollectTelemetryData(exec Executor, services []RegisteredService) TelemetryData {
 	cpuPerc, _ := cpu.Percent(time.Second, false)
 	vm := collectRAMDetails()
 	disks := collectDiskItems()
@@ -385,8 +416,246 @@ func CollectTelemetryData(exec Executor) TelemetryData {
 		Version:          AgentVersion,
 		ZFSHealth:        collectZFSHealth(exec),
 		GPUUsage:         collectGPUUsage(exec),
+		Services:         collectServiceMetrics(exec, services),
 		Timestamp:        time.Now().Format(time.RFC3339),
 	}
+}
+
+// collectServiceMetrics probes each registered service and reports its status
+// plus resource usage. Dispatch is per subtype. A probe failure (service
+// removed, tool error) reports the service as inactive.
+func collectServiceMetrics(exec Executor, services []RegisteredService) []ServiceMetric {
+	if len(services) == 0 {
+		return nil
+	}
+	metrics := make([]ServiceMetric, 0, len(services))
+	for _, rs := range services {
+		if rs.Name == "" {
+			continue
+		}
+		metrics = append(metrics, probeRegistered(exec, rs))
+	}
+	return metrics
+}
+
+// probeRegistered dispatches to the right probe for a registered service's
+// subtype.
+func probeRegistered(exec Executor, rs RegisteredService) ServiceMetric {
+	switch rs.SubTypeOr("systemd") {
+	case "docker":
+		return probeDockerContainer(exec, rs.Name)
+	case "podman":
+		return probePodmanContainer(exec, rs.Name)
+	case "process":
+		return probeProcess(exec, rs.Name)
+	case "systemd-timer":
+		return probeSystemdTimer(exec, rs.Name)
+	case "cron":
+		return probeCron(exec, rs.Name)
+	case "lxc":
+		return probeLXC(exec, rs.Name)
+	case "kvm", "libvirt":
+		return probeKVM(exec, rs.Name)
+	default: // systemd
+		return probeService(exec, rs.Name)
+	}
+}
+
+// probeService collects one service's status + resource usage via
+// `systemctl show <name> --property=...`. The CPU percentage is a per-tick rate
+// computed against the previous sample (see cpuNSCache).
+func probeService(exec Executor, name string) ServiceMetric {
+	svc := ServiceMetric{Name: name}
+
+	out, err := exec.Execute("systemctl", "show", name, "--property="+systemdStatusFields)
+	if err != nil {
+		// Service unknown/removed. systemctl show exits non-zero; treat as
+		// inactive and don't cache a stale CPU base.
+		svc.Active = false
+		svc.SubState = "dead"
+		svc.LoadState = "not-found"
+		return svc
+	}
+
+	parsed := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		idx := strings.Index(line, "=")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		parsed[key] = val
+	}
+
+	svc.Active = parsed["ActiveState"] == "active"
+	svc.SubState = parsed["SubState"]
+	svc.LoadState = parsed["LoadState"]
+
+	if v, ok := parsed["MemoryCurrent"]; ok && v != "[not set]" {
+		if n, perr := strconv.ParseUint(v, 10, 64); perr == nil {
+			svc.MemoryCurrent = n
+		}
+	}
+	if v, ok := parsed["NRestarts"]; ok {
+		if n, perr := strconv.ParseUint(v, 10, 64); perr == nil {
+			svc.NRestarts = n
+		}
+	}
+	if v, ok := parsed["CPUUsageNS"]; ok && v != "[not set]" {
+		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+			svc.CPUUsageNS = n
+			svc.CPUUsagePercent = cpuRateFor(name, n)
+		}
+	}
+	if ts, ok := parsed["ActiveEnterTimestamp"]; ok && ts != "" {
+		if t, terr := parseSystemdTimestamp(ts); terr == nil {
+			uptime := time.Since(t)
+			if uptime > 0 {
+				svc.UptimeSeconds = int64(uptime.Seconds())
+			}
+		}
+	}
+	return svc
+}
+
+// cpuNSCache remembers the previous CPUUsageNS sample per service so the agent
+// can compute a CPU-per-second rate between two telemetry ticks (30s apart).
+// Guarded so concurrent telemetry loops cannot race.
+var (
+	cpuNSCacheMu sync.Mutex
+	cpuNSCache   = map[string]int64{}
+)
+
+// cpuRateFor computes a CPU percentage from two CPUUsageNS samples and caches
+// the latest one. Returns -1 until two samples exist.
+func cpuRateFor(name string, currentNS int64) float64 {
+	if currentNS < 0 {
+		return -1
+	}
+	cpuNSCacheMu.Lock()
+	defer cpuNSCacheMu.Unlock()
+	prev, ok := cpuNSCache[name]
+	cpuNSCache[name] = currentNS
+	if !ok || currentNS < prev {
+		// First sample, or the counter reset (service restarted): no rate yet.
+		return -1
+	}
+	// The sampling window is the wall time between ticks. We don't track the
+	// previous wall clock here, so approximate with a 30s window. This keeps
+	// the collector stateless per call and close enough for telemetry.
+	const windowSeconds = 30.0
+	deltaNS := currentNS - prev
+	return (float64(deltaNS) / float64(windowSeconds*1e9)) * 100.0
+}
+
+// parseSystemdTimestamp parses a systemd timestamp of the form
+// "Wed 2026-08-12 14:03:22 UTC".
+func parseSystemdTimestamp(s string) (time.Time, error) {
+	return time.Parse("Mon 2006-01-02 15:04:05 MST", s)
+}
+
+// systemdStatusFields lists the systemctl show properties used by probeService,
+// kept in one place for tests.
+const systemdStatusFields = "ActiveState,SubState,LoadState,CPUUsageNS,MemoryCurrent,NRestarts,ActiveEnterTimestamp"
+
+// probeDockerContainer collects one container's status + resource usage. CPU and
+// memory come from a single `docker stats --no-stream` row (a live snapshot);
+// restart count and uptime come from `docker inspect`. A missing container
+// reports inactive.
+func probeDockerContainer(exec Executor, name string) ServiceMetric {
+	svc := ServiceMetric{Name: name, SubType: "docker", LoadState: "not-found"}
+
+	// Inspect gives state, restarts and started time in one call.
+	out, err := exec.Execute("docker", "inspect", name, "--format", "{{.State.Running}}|{{.State.Status}}|{{.RestartCount}}|{{.State.StartedAt}}")
+	if err != nil {
+		return svc // container not found -> inactive
+	}
+	fields := strings.Split(strings.TrimSpace(string(out)), "|")
+	if len(fields) >= 4 {
+		svc.Active = strings.TrimSpace(fields[0]) == "true"
+		svc.SubState = strings.TrimSpace(fields[1])
+		svc.LoadState = "loaded"
+		if n, perr := strconv.ParseUint(strings.TrimSpace(fields[2]), 10, 64); perr == nil {
+			svc.NRestarts = n
+		}
+		if t, terr := time.Parse(time.RFC3339Nano, strings.TrimSpace(fields[3])); terr == nil {
+			if u := time.Since(t); u > 0 {
+				svc.UptimeSeconds = int64(u.Seconds())
+			}
+		}
+	}
+
+	// Live CPU% and memory from a single --no-stream stats snapshot.
+	stats, serr := exec.Execute("docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}", name)
+	if serr == nil {
+		sparts := strings.Split(strings.TrimSpace(string(stats)), "|")
+		if len(sparts) >= 2 {
+			if cpu := parsePercent(strings.TrimSpace(sparts[0])); cpu >= 0 {
+				svc.CPUUsagePercent = cpu
+			}
+			if mem := parseMemUsage(strings.TrimSpace(sparts[1])); mem > 0 {
+				svc.MemoryCurrent = mem
+			}
+		}
+	}
+	return svc
+}
+
+// parsePercent parses a value like "2.35%" into a float percent, or -1 on
+// failure.
+func parsePercent(s string) float64 {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "%")
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return -1
+	}
+	return f
+}
+
+// parseMemUsage parses docker stats MemUsage values like "1.234MiB / 7.8GiB"
+// into the first (used) quantity in bytes. Returns 0 on failure.
+func parseMemUsage(s string) uint64 {
+	used := strings.SplitN(s, "/", 2)[0]
+	used = strings.TrimSpace(used)
+	return parseSizeBytes(used)
+}
+
+// parseSizeBytes parses a docker/human size like "1.5GiB" or "512MiB" or
+// "1.2kB" into bytes. Supports B, KB/kB, MB/MiB, GB/GiB, TB/TiB suffixes.
+func parseSizeBytes(s string) uint64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	mult := 1.0
+	upper := strings.ToUpper(s)
+	switch {
+	case strings.HasSuffix(upper, "TIB"):
+		mult, s = 1<<40, strings.TrimSpace(s[:len(s)-3])
+	case strings.HasSuffix(upper, "GIB"):
+		mult, s = 1<<30, strings.TrimSpace(s[:len(s)-3])
+	case strings.HasSuffix(upper, "MIB"):
+		mult, s = 1<<20, strings.TrimSpace(s[:len(s)-3])
+	case strings.HasSuffix(upper, "KIB"):
+		mult, s = 1<<10, strings.TrimSpace(s[:len(s)-3])
+	case strings.HasSuffix(upper, "TB"):
+		mult, s = 1e12, strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "GB"):
+		mult, s = 1e9, strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "MB"):
+		mult, s = 1e6, strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "KB"):
+		mult, s = 1e3, strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "B"):
+		mult, s = 1, strings.TrimSpace(s[:len(s)-1])
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return uint64(f * mult)
 }
 
 func collectZFSHealth(exec Executor) string {
@@ -417,7 +686,7 @@ func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopC
 
 	// 1. Immediate Discovery Push & Initial Telemetry Frame
 	pushDiscovery(c, cfg)
-	pushTelemetry(c, exec)
+	pushTelemetry(c, exec, cfg.Services)
 
 	// If telemetry capability is disabled in agent.yml, return early after discovery
 	if !cfg.Capabilities.Telemetry {
@@ -448,14 +717,14 @@ func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopC
 					lastIPs = currentIPs
 				}
 
-				pushTelemetry(c, exec)
+				pushTelemetry(c, exec, currentCFG.Services)
 			}
 		}
 	}()
 }
 
-func pushTelemetry(c MessageWriter, exec Executor) {
-	telemetry := CollectTelemetryData(exec)
+func pushTelemetry(c MessageWriter, exec Executor, services []RegisteredService) {
+	telemetry := CollectTelemetryData(exec, services)
 	payload, _ := json.Marshal(WSMessage{
 		Type: "telemetry",
 		Payload: map[string]interface{}{
@@ -469,6 +738,7 @@ func pushTelemetry(c MessageWriter, exec Executor) {
 			"host_details":       telemetry.HostDetails,
 			"zfs_health":         telemetry.ZFSHealth,
 			"gpu_usage_percent":  telemetry.GPUUsage,
+			"services":           telemetry.Services,
 			"timestamp":          telemetry.Timestamp,
 		},
 	})

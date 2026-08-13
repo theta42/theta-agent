@@ -538,6 +538,54 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		sendResponse("ok", "iam applied")
+	case "register_service":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.ServiceRegistration {
+			log.Println("Service registration rejected: capability disabled in agent.yml")
+			sendResponse("error", "service registration capability disabled")
+			return
+		}
+		name, _ := msg.Payload["service"].(string)
+		subtype, _ := msg.Payload["subtype"].(string)
+		if name == "" {
+			sendResponse("error", "missing service name")
+			return
+		}
+		if subtype == "" {
+			subtype = "systemd"
+		}
+		log.Printf("Registering %s service %s...", subtype, name)
+		if err := cm.PersistService(name, subtype, false); err != nil {
+			log.Printf("Service registration failed: %v", err)
+			sendResponse("error", err.Error())
+			return
+		}
+		sendResponse("ok", "service registered")
+	case "unregister_service":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.ServiceRegistration {
+			log.Println("Service unregistration rejected: capability disabled in agent.yml")
+			sendResponse("error", "service registration capability disabled")
+			return
+		}
+		name, _ := msg.Payload["service"].(string)
+		if name == "" {
+			sendResponse("error", "missing service name")
+			return
+		}
+		log.Printf("Unregistering service %s...", name)
+		if err := cm.PersistService(name, "systemd", true); err != nil {
+			log.Printf("Service unregistration failed: %v", err)
+			sendResponse("error", err.Error())
+			return
+		}
+		sendResponse("ok", "service unregistered")
 	case "wireguard_apply":
 		if !verifySignature(cfg, msg) {
 			sendResponse("error", "signature verification failed")

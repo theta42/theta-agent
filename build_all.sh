@@ -55,6 +55,10 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$GUI_LDFLAGS" -o "$DI
 echo "  -> windows/arm64 tray..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$GUI_LDFLAGS" -o "$DIST_DIR/theta-agent-tray-windows-arm64.exe" ./cmd/theta-agent-tray/
 
+echo "Copying shell tab-completion scripts..."
+cp completions/theta-agent.bash "$DIST_DIR/theta-agent.bash"
+cp completions/theta-agent.zsh "$DIST_DIR/theta-agent.zsh"
+
 echo ""
 echo "Build complete! Artifacts in $DIST_DIR:"
 ls -lh "$DIST_DIR"

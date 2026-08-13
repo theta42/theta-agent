@@ -163,10 +163,12 @@ auth_token: "$TOKEN"
 join_key: "$JOIN_KEY"
 public_key: "$PUBLIC_KEY"
 location: "unknown"
+services: []
 capabilities:
   telemetry: true
   configure_ldap: true
   ldap_tunnel: true
+  service_registration: true
   reboot: false
   service_control: []
   arbitrary_bash: false
@@ -267,3 +269,20 @@ systemctl start theta-agent
 log "Theta Agent installation complete!"
 log "Verify status with: systemctl status theta-agent"
 log "Check logs with: journalctl -u theta-agent -f"
+
+# --- 7. Install shell tab-completion for the CLI ----------------------------
+log "Installing shell tab-completion for theta-agent..."
+mkdir -p /usr/share/bash-completion/completions
+cp -f "$(dirname "$0")/../completions/theta-agent.bash" /usr/share/bash-completion/completions/theta-agent 2>/dev/null \
+  || curl -fsSL "https://github.com/theta42/theta-agent/releases/latest/download/theta-agent.bash" -o /usr/share/bash-completion/completions/theta-agent 2>/dev/null \
+  || true
+
+mkdir -p /usr/share/zsh/site-functions
+cp -f "$(dirname "$0")/../completions/theta-agent.zsh" /usr/share/zsh/site-functions/_theta-agent 2>/dev/null \
+  || curl -fsSL "https://github.com/theta42/theta-agent/releases/latest/download/theta-agent.zsh" -o /usr/share/zsh/site-functions/_theta-agent 2>/dev/null \
+  || true
+
+if [ -d /etc/bash_completion.d ]; then
+  ln -sf /usr/share/bash-completion/completions/theta-agent /etc/bash_completion.d/theta-agent 2>/dev/null || true
+fi
+log "Shell tab-completion installed."

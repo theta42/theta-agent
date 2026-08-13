@@ -41,6 +41,18 @@ func handleCLI(args []string) bool {
 	case "configure-login":
 		runConfigureLogin(args[1:])
 		return true
+	case "register":
+		runRegisterService(args[1:])
+		return true
+	case "unregister":
+		runUnregisterService(args[1:])
+		return true
+	case "list-services":
+		runListServices(args[1:])
+		return true
+	case "install-completions":
+		runInstallCompletions(args[1:])
+		return true
 	case "--version", "version", "-v":
 		fmt.Println("Theta Agent " + AgentVersion)
 		return true
@@ -63,6 +75,11 @@ func printUsage() {
 	fmt.Println("  theta-agent install-service        (Windows) register the agent as a service")
 	fmt.Println("  theta-agent remove-service         (Windows) unregister the agent service")
 	fmt.Println("  theta-agent configure-login        (Windows) wire OpenCredential to the agent's LDAP tunnel")
+	fmt.Println("  theta-agent register <type> <name>    Register a service as a child of this host")
+	fmt.Println("  theta-agent unregister <type> <name>  Remove a registered service from Theta Directory")
+	fmt.Println("  theta-agent list-services             List registered services")
+	fmt.Println("      types: systemd docker podman process systemd-timer cron lxc kvm/libvirt")
+	fmt.Println("  theta-agent install-completions     Install bash/zsh tab-completion for this CLI")
 	fmt.Println("  theta-agent version                 Show version info")
 	fmt.Println()
 	fmt.Println("Reinitialize Flags:")
