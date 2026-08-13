@@ -5,6 +5,35 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.6.0] - 2026-08-12
+
+### Added
+- **Register and monitor services of many types.** `theta-agent register <type>
+  <name>` / `theta-agent unregister <type> <name>` now supports `systemd`,
+  `docker`, `podman`, `process`, `systemd-timer`, `cron`, `lxc`, and
+  `kvm`/`libvirt`. The agent persists each registration in `agent.yml`
+  (with its subtype), reports per-service status and resource usage in the 30s
+  telemetry stream, and pushes a signed `register_service`/`unregister_service`
+  frame over the agent WebSocket so the directory creates or removes the child
+  service resource under the host immediately.
+- **Per-service rich metrics.** The telemetry `services` array now carries CPU%,
+  memory, restart count and uptime for each registered service, plus
+  schedule-aware fields (`next_run`, `last_run`, `triggered_count`) for
+  `systemd-timer` and `cron`, and VM `status` for `lxc`/`kvm`/`libvirt`.
+- **Cron schedule parser.** A real five-field cron parser (`*`, lists, ranges,
+  steps, named tokens `JAN`/`SUN`, and the day-of-month/day-of-week OR rule)
+  computes next/last fire times instead of only reporting "configured".
+- **`process` subtype reads `/proc` directly** — no external tool — so any
+  process not under an init system can be tracked.
+- **Shell tab-completion** for every service type (bash + zsh), installed by
+  `install.sh` or `theta-agent install-completions`; `completions/` scripts are
+  shipped as release artifacts.
+
+### Changed
+- `agent.yml` `services:` entries may be written as objects
+  (`- name: nginx` / `subtype: systemd`); the plain scalar form still loads
+  (treated as `systemd`) for backwards compatibility.
+
 ## [v2.5.1] - 2026-08-12
 
 ### Changed
