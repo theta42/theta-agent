@@ -94,18 +94,30 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Validation: require credentials ONLY if config file does not already exist
-if [ ! -f "$CONFIG_FILE" ] && [ -z "$B64_CONFIG" ] && { [ -z "$URL" ] || { [ -z "$TOKEN" ] && [ -z "$JOIN_KEY" ]; }; }; then
-  error "Missing required configuration. Provide a base64 encoded config, or --url with either --join-key or --token."
+# Validation: require credentials ONLY if config file does not already exist.
+# --url may be omitted when --join-key is given: `theta-agent discover` (below,
+# after the binary download) can fill it in automatically when there is
+# exactly one theta-suite site on the local network -- the common case for a
+# fresh machine on a site's own LAN, and always admin-driven/one-time, never
+# automatic once the agent is actually enrolled and running.
+if [ ! -f "$CONFIG_FILE" ] && [ -z "$B64_CONFIG" ] && [ -z "$URL" ] && [ -z "$JOIN_KEY" ] && [ -z "$TOKEN" ]; then
+  error "Missing required configuration. Provide a base64 encoded config, --join-key (URL optional, auto-discovered if omitted), or --url with --token."
   echo "Usage examples:"
   echo "  sh install.sh \"BASE64_CONFIG\""
-  echo "  sh install.sh --url \"https://sso.local\" --join-key \"tjk_...\" --install-sssd"
+  echo "  sh install.sh --join-key \"<your-join-key>\" --install-sssd    # auto-discovers --url if there's one site on the LAN"
+  echo "  sh install.sh --url \"https://sso.local\" --join-key \"<your-join-key>\" --install-sssd"
   echo "  sh install.sh --url \"https://sso.local\" --token \"ISSUED_TOKEN\" --public-key \"BASE64_KEY\""
   echo ""
   echo "--join-key is the normal path: the host enrolls itself on first connect"
   echo "and the SSO issues it its own token + public key, which the agent writes"
   echo "back into agent.yml. Get a key from Directory -> Install Agent."
   exit 1
+fi
+# --token identifies a specific, already-issued credential for a specific
+# server -- unlike --join-key, there's no "the one site on the LAN" fallback
+# that makes sense here, so --url stays required for it.
+if [ ! -f "$CONFIG_FILE" ] && [ -z "$B64_CONFIG" ] && [ -z "$URL" ] && [ -n "$TOKEN" ]; then
+  error "--token requires --url (auto-discovery only applies to --join-key)."
 fi
 
 log "Starting Theta Agent installation..."
@@ -146,6 +158,27 @@ log "Detected OS: $OS_NAME ($ARCH_NAME) -> Downloading binary $BINARY_NAME..."
 curl -fsSL "$BINARY_URL" -o "$BIN_PATH.tmp" || error "Failed to download binary from $BINARY_URL"
 chmod +x "$BIN_PATH.tmp"
 mv -f "$BIN_PATH.tmp" "$BIN_PATH"
+
+# 3b. Auto-discover --url via mDNS when it was omitted (join-key path only --
+# see the validation above). Read-only lookup (`theta-agent discover
+# --urls-only`, AGENT_LOCAL_DISCOVERY_SPEC.md); this script decides what to
+# do with the result, the agent binary never acts on it by itself. Only ever
+# auto-selects when there is EXACTLY one candidate -- ambiguity is a reason
+# to ask the operator to be explicit, not a reason to guess.
+if [ -z "$URL" ] && [ -n "$JOIN_KEY" ] && [ -z "$B64_CONFIG" ] && [ ! -f "$CONFIG_FILE" ]; then
+  log "No --url given -- looking for a theta-suite site on the local network (mDNS)..."
+  DISCOVERED="$("$BIN_PATH" discover --urls-only --timeout 3s 2>/dev/null || true)"
+  DISCOVERED_COUNT="$(printf '%s\n' "$DISCOVERED" | grep -c . || true)"
+  if [ "$DISCOVERED_COUNT" -eq 1 ]; then
+    URL="$(printf '%s\n' "$DISCOVERED" | head -n1)"
+    log "Found one site -- using $URL"
+  elif [ "$DISCOVERED_COUNT" -gt 1 ]; then
+    error "Found $DISCOVERED_COUNT theta-suite sites on the local network -- re-run with --url to pick one:
+$DISCOVERED"
+  else
+    error "No theta-suite site found on the local network and --url was not given. Re-run with --url \"https://sso.example.com\", or check that this host can reach the site's LAN (mDNS doesn't cross routers/VLANs)."
+  fi
+fi
 
 # 4. Setup configuration
 log "Preparing configuration directory $CONFIG_DIR..."

@@ -53,6 +53,9 @@ func handleCLI(args []string) bool {
 	case "install-completions":
 		runInstallCompletions(args[1:])
 		return true
+	case "discover":
+		runDiscover(args[1:])
+		return true
 	case "--version", "version", "-v":
 		fmt.Println("Theta Agent " + AgentVersion)
 		return true
@@ -80,10 +83,16 @@ func printUsage() {
 	fmt.Println("  theta-agent list-services             List registered services")
 	fmt.Println("      types: systemd docker podman process systemd-timer cron lxc kvm/libvirt")
 	fmt.Println("  theta-agent install-completions     Install bash/zsh tab-completion for this CLI")
+	fmt.Println("  theta-agent discover [flags]        List theta-suite sites announced on the local network")
 	fmt.Println("  theta-agent version                 Show version info")
 	fmt.Println()
 	fmt.Println("Reinitialize Flags:")
 	fmt.Println("  --join-key <key>                    Supply new join key for re-enrollment")
+	fmt.Println()
+	fmt.Println("Discover Flags:")
+	fmt.Println("  --timeout <duration>                 mDNS browse window (default 3s)")
+	fmt.Println("  --urls-only                          Print just \"https://<directoryHost>\", one per line")
+	fmt.Println("  --json                               Print the full announcement list as JSON")
 	fmt.Println()
 }
 
@@ -193,6 +202,60 @@ func runReinitialize(args []string) {
 	exec := &SystemExecutor{}
 	restartAffectedServices(exec)
 	os.Exit(0)
+}
+
+// runDiscover browses for theta-suite sites announced on the local network
+// (AGENT_LOCAL_DISCOVERY_SPEC.md's "fresh/unenrolled agent" case) and prints
+// them. Read-only -- never writes agent.yml or touches enrollment itself;
+// install.sh is what turns a `--urls-only` result into a --url argument, and
+// only when there is exactly one unambiguous candidate.
+func runDiscover(args []string) {
+	timeout := 3 * time.Second
+	urlsOnly := false
+	jsonMode := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--urls-only":
+			urlsOnly = true
+		case "--json":
+			jsonMode = true
+		case "--timeout":
+			if i+1 < len(args) {
+				if d, err := time.ParseDuration(args[i+1]); err == nil {
+					timeout = d
+				}
+				i++
+			}
+		}
+	}
+
+	sites := browseAnnouncements(timeout)
+
+	if jsonMode {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(sites)
+		os.Exit(0)
+	}
+
+	if urlsOnly {
+		for _, s := range sites {
+			fmt.Printf("https://%s\n", s.DirectoryHost)
+		}
+		os.Exit(0)
+	}
+
+	if len(sites) == 0 {
+		fmt.Println("No theta-suite sites found on the local network.")
+		os.Exit(0)
+	}
+	fmt.Printf("Found %d site(s) on the local network:\n\n", len(sites))
+	for i, s := range sites {
+		fmt.Printf("  [%d] site=%s\n", i+1, s.Site)
+		fmt.Printf("      url:     https://%s\n", s.DirectoryHost)
+		fmt.Printf("      version: %s\n", s.Version)
+	}
+	fmt.Println()
 }
 
 // releaseAssetURL returns the GitHub release download URL for a theta-agent
