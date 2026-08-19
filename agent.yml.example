@@ -120,3 +120,8 @@ capabilities:
   # CRITICAL: Allow the execution of raw bash scripts sent from Theta Directory.
   # Useful for GitOps deployments, but allows remote code execution.
   arbitrary_bash: false
+
+# mDNS local-discovery: when a theta-gateway on the same LAN announces it fronts
+# this agent's server_url host, redirect DNS + routing to the local IP. This is
+# always safe because TLS validation is unchanged; set false to disable it.
+local_discovery: true

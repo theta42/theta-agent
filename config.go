@@ -68,6 +68,9 @@ type Config struct {
 	PublicIPDetect *bool           `yaml:"public_ip_detect"` // false disables external lookups (air-gap)
 	AutoVPN        bool            `yaml:"auto_vpn"`         // auto-connect WireGuard when away
 	WireGuard      WireGuardConfig `yaml:"wireguard"`
+	// LocalDiscovery enables mDNS-based LAN shortcutting (local_discovery.go).
+	// Default is true. Set to false to disable /etc/hosts and route overrides.
+	LocalDiscovery *bool `yaml:"local_discovery"`
 
 	// LDAP logon via the bundled OpenCredential credential provider
 	// (DESIGN-WINDOWS.md §6). LdapBaseDN is the directory's LDAP base DN,
