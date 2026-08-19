@@ -5,6 +5,22 @@ All notable changes to the `theta-agent` daemon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.8.2] - 2026-08-18
+
+### Added
+- **`local_discovery` is now configurable in `agent.yml`.** Added
+  `local_discovery: true` (default) to `agent.yml.example` and `Config` in
+  `config.go`. Set to `false` to disable the passive mDNS listener and leave
+  `/etc/hosts` untouched.
+
+### Fixed
+- **Local-discovery no longer overrides `/etc/hosts` when normal DNS already
+  resolves the server to the LAN IP.** Previously the daemon wrote the managed
+  hosts block unconditionally on every mDNS announcement, even when the
+  discovered IP matched what DNS already returned. It now checks the current
+  resolution first and only overrides when the IP actually differs, avoiding
+  unnecessary edits and preserving any operator-managed entry.
+
 ## [v2.8.1] - 2026-08-13
 
 ### Fixed

@@ -32,8 +32,19 @@ const mdnsLookupTimeout = 3 * time.Second
 // StartLocalDiscovery runs until the process exits. No-op (logs once, then
 // returns) if the target host can't be determined -- callers just
 // `go StartLocalDiscovery(cm)` unconditionally.
+func localDiscoveryEnabled(cfg *Config) bool {
+	if cfg.LocalDiscovery != nil {
+		return *cfg.LocalDiscovery
+	}
+	return true
+}
+
 func StartLocalDiscovery(cm *ConfigManager) {
 	cfg := cm.Get()
+	if !localDiscoveryEnabled(cfg) {
+		log.Printf("[local-discovery] disabled in agent.yml")
+		return
+	}
 	targetHost := hostFromURL(cfg.ServerURL)
 	if targetHost == "" {
 		log.Printf("[local-discovery] could not parse a hostname out of server_url %q -- disabled", cfg.ServerURL)
@@ -48,7 +59,15 @@ func StartLocalDiscovery(cm *ConfigManager) {
 		ip := findLocalAnnouncement(targetHost)
 		switch {
 		case ip != "" && !currentlyOverridden:
-			if err := applyHostsOverride(map[string]string{targetHost: ip}); err != nil {
+			// Only apply an override if the discovered IP actually differs from
+			// normal resolution. If DNS already answers with the LAN IP (e.g.
+			// the host is on the same LAN and the router/local DNS returns the
+			// local address), overriding /etc/hosts is unnecessary and hides
+			// the real state from the operator. It also avoids clobbering an
+			// existing /etc/hosts entry that may be intentionally managed.
+			if currentIP := resolveHost(targetHost); currentIP == ip {
+				log.Printf("[local-discovery] %s already resolves to %s -- no hosts override needed", targetHost, ip)
+			} else if err := applyHostsOverride(map[string]string{targetHost: ip}); err != nil {
 				log.Printf("[local-discovery] found %s locally at %s but failed to apply hosts override: %v", targetHost, ip, err)
 			} else {
 				// Pin the packet path too: the hosts override only fixes name
@@ -99,6 +118,22 @@ func hostFromURL(raw string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// resolveHost performs a normal DNS lookup of host and returns the first IPv4
+// address, or "" if none. Used by local-discovery to skip an /etc/hosts
+// override when normal resolution already yields the discovered LAN IP.
+func resolveHost(host string) string {
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return ""
+	}
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	return ""
 }
 
 // findLocalAnnouncement browses for _theta-suite._tcp on the local segment
