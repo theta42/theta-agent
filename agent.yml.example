@@ -52,14 +52,24 @@ services: []
 # theta-gateway/theta-proxy on the local network segment announces itself as
 # fronting this agent's server_url host, skip the relay/WAN path and talk to
 # it directly. Off by default -- it changes host name resolution on this
-# machine. Linux only for now; Windows/macOS need their own platform-native
-# support before this does anything there.
+# machine. Shipped on Linux and Windows (hosts-file override + /32 route pin
+# on Windows since v2.2.0).
 prefer_local_directory: false
 
 # Windows-specific (DESIGN-WINDOWS.md ??11). Ignored on Linux.
 service_name: "theta-agent"            # Windows service name
 desktop_helper: ""                     # theta-agent-helper.exe path (session-0 ops)
 public_ip_detect: true                 # false = air-gap: never call external IP services
+
+# White-label the Windows logon tile (docs/WHITE_LABELING.md). Ignored on
+# Linux. credential_provider_name replaces the stock "OpenCredential <version>"
+# text under the credential-provider tile on the Windows logon screen; empty
+# keeps the vendor default. Applied whenever OpenCredential is seeded
+# (configure-login / Directory-pushed LDAP config).
+credential_provider_name: ""
+# The tile logo is a Win32 resource inside the provider DLL and cannot yet be
+# swapped from config -- see docs/WHITE_LABELING.md for the supported paths:
+credential_provider_logo: ""
 
 # WireGuard mesh client (DESIGN-WINDOWS.md ??5). The signed wireguard_apply
 # command pushes the peer config down the WSS channel; these are local paths.

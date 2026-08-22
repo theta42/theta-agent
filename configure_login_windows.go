@@ -30,6 +30,10 @@ func configureLogin(cm *ConfigManager) error {
 		return fmt.Errorf("enable LDAP capabilities: %w", err)
 	}
 
+	// 2. Apply logon-tile white-labeling. Independent of the base DN: it only
+	// needs the provider to be registered (the agent installer did that).
+	maybeApplyCredentialProviderBranding(cfg)
+
 	baseDN := cfg.LdapBaseDN
 	if baseDN == "" {
 		log.Printf("configure-login: no ldap_base_dn in %s yet — it will be applied when the Directory pushes the LDAP config (capabilities.configure_ldap is now enabled)", cm.configPath)
@@ -53,6 +57,9 @@ func seedOpenCredentialFromConfig(cm *ConfigManager, baseDN string) error {
 	if err := seedOpenCredential(baseDN, adminGroup, localAdmin); err != nil {
 		return err
 	}
+	// Re-apply branding after every seed: the OpenCredential installer resets
+	// its registration (and thus the tile name) on upgrade.
+	maybeApplyCredentialProviderBranding(cfg)
 	log.Printf("configure-login: OpenCredential seeded (LDAP 127.0.0.1:389, base_dn=%s, %q -> %q)", baseDN, adminGroup, localAdmin)
 	return nil
 }
