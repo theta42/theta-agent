@@ -1,4 +1,4 @@
-## [Unreleased]
+## [v2.9.0] - 2026-08-22
 
 ### Added
 - **White-labeling for the Windows logon tile.** New `credential_provider_name`
