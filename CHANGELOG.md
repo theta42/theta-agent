@@ -1,3 +1,6 @@
+## [2.8.3] - 2026-08-22
+- Added docs/KNOWN_ISSUES.md for multi-site known limits and tradeoffs.
+
 # Changelog
 
 All notable changes to the `theta-agent` daemon will be documented in this file.
