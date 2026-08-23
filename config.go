@@ -80,6 +80,15 @@ type Config struct {
 	LdapBaseDN          string `yaml:"ldap_base_dn"`
 	LdapAdminGroup      string `yaml:"ldap_admin_group"`
 	LdapLocalAdminGroup string `yaml:"ldap_local_admin_group"`
+
+	// White-labeling for the Windows logon tile (DESIGN-WINDOWS.md §6.1).
+	// CredentialProviderName replaces the stock "OpenCredential" display name
+	// shown under the tile on the Windows logon screen; empty keeps the
+	// vendor default. CredentialProviderLogo is reserved: the tile bitmap is
+	// a Win32 resource inside the provider DLL, so it cannot be applied from
+	// config today — see docs/WHITE_LABELING.md for the supported paths.
+	CredentialProviderName string `yaml:"credential_provider_name"`
+	CredentialProviderLogo string `yaml:"credential_provider_logo"`
 }
 
 // DetectPublicIP reports whether the agent may perform external public-IP

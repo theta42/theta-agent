@@ -155,13 +155,20 @@ func runSelfUpdate(args []string) {
 	}
 	out.Close()
 
-	if err := os.Rename(tmpPath, binPath); err != nil {
-		log.Fatalf("[!] Cannot replace binary at %s: %v", binPath, err)
+	// Platform-specific install: unix renames over the running binary; Windows
+	// must stage <self>.new and hand the swap to the session helper because
+	// the service holds the exe image locked (update_windows.go).
+	restarted, err := swapUpdatedBinary(cm.Get(), tmpPath, binPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		log.Fatalf("[!] Cannot install updated binary at %s: %v", binPath, err)
 	}
 
 	log.Printf("[+] Binary updated successfully at %s.", binPath)
-	exec := &SystemExecutor{}
-	restartAffectedServices(exec)
+	if !restarted {
+		exec := &SystemExecutor{}
+		restartAffectedServices(exec)
+	}
 	os.Exit(0)
 }
 

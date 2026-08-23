@@ -7,7 +7,9 @@
 ; Usage:
 ;   iscc "/DMyAppVersion=2.2.0" installer\windows\installer.iss
 ;   theta-agent-2.2.0-windows-amd64-setup.exe /SILENT ^
-;       /SERVER_URL=https://sso.example.com /JOIN_KEY=tjk_...
+;       /SERVER_URL=https://sso.example.com /JOIN_KEY=tjk_... [/CP_NAME="My Org"]
+;
+; /CP_NAME white-labels the Windows logon tile (credential_provider_name).
 ;
 ; The version is passed in by scripts/setup-build-env.ps1 (derived from the
 ; git tag). The default below exists only so a bare `iscc installer.iss` call
@@ -115,6 +117,7 @@ var
   AuthToken: String;
   PublicKey: String;
   B64Config: String;
+  CpName: String;
 
   SsoLogon: Boolean;
   CapTelemetry: Boolean;
@@ -124,6 +127,7 @@ var
   AgentConfigPage: TWizardPage;
   ServerURLEdit: TNewEdit;
   JoinKeyEdit: TNewEdit;
+  DiscoverButton: TNewButton;
   OpenSSOButton: TNewButton;
 
   FeaturesPage: TWizardPage;
@@ -165,13 +169,25 @@ begin
   if B then Result := 'true' else Result := 'false';
 end;
 
+// Strip any trailing slashes from a pasted URL so concatenations like
+// "<url>/install-agent/authorize" never become "<url>//install-agent/...".
+function NormalizeUrl(const S: String): String;
+begin
+  Result := Trim(S);
+  while (Length(Result) > 1) and (Result[Length(Result)] = '/') do
+    Delete(Result, Length(Result), 1);
+end;
+
 function InitializeSetup(): Boolean;
 begin
-  ServerURL := GetCmdParam('SERVER_URL');
+  ServerURL := NormalizeUrl(GetCmdParam('SERVER_URL'));
   JoinKey := GetCmdParam('JOIN_KEY');
   AuthToken := GetCmdParam('AUTH_TOKEN');
   PublicKey := GetCmdParam('PUBLIC_KEY');
   B64Config := GetCmdParam('B64_CONFIG');
+  // White-label for the Windows logon tile (credential_provider_name in
+  // agent.yml; applied by the agent when it seeds OpenCredential).
+  CpName := GetCmdParam('CP_NAME');
 
   SsoLogon := CmdBool('SSO_LOGON', False);
   CapTelemetry := CmdBool('TELEMETRY', True);
@@ -211,7 +227,7 @@ var
   Lines: TArrayOfString;
   Tries: Integer;
 begin
-  Url := Trim(ServerURLEdit.Text);
+  Url := NormalizeUrl(ServerURLEdit.Text);
   if Url = '' then begin
     MsgBox('Enter the Theta Directory URL first (e.g. https://directory.example.com).',
       mbInformation, MB_OK);
@@ -302,7 +318,7 @@ begin
   end;
 
   if FileExists(OutFile) and LoadStringsFromFile(OutFile, Lines) and (GetArrayLength(Lines) >= 2) then begin
-    if Trim(Lines[1]) <> '' then ServerURLEdit.Text := Trim(Lines[1]);
+    if Trim(Lines[1]) <> '' then ServerURLEdit.Text := NormalizeUrl(Lines[1]);
     if Trim(Lines[0]) <> '' then JoinKeyEdit.Text := Trim(Lines[0]);
     ServerURL := ServerURLEdit.Text;
     JoinKey := JoinKeyEdit.Text;
@@ -311,6 +327,85 @@ begin
       mbInformation, MB_OK);
   end;
   DeleteFile(OutFile);
+end;
+
+// "Discover local Directory..." -- browses mDNS for _theta-suite._tcp.local
+// (the same announcement theta-gateway publishes for agent local-discovery,
+// see AGENT_LOCAL_DISCOVERY_SPEC.md) and pre-fills the URL field from the
+// TXT record's directoryHost. Mirrors what install.sh does on Linux. The
+// browse is a legacy mDNS query (RFC 6762 §6): a plain UDP socket sending a
+// PTR question to 224.0.0.251:5353 gets unicast answers back; we scan the
+// raw packets for the ASCII "directoryHost=" TXT payload instead of parsing
+// DNS messages fully.
+procedure OnDiscoverClick(Sender: TObject);
+var
+  OutFile, ScriptFile, FoundUrl, Msg, PsScript: String;
+  ErrorCode: Integer;
+  Lines: TArrayOfString;
+  Tries, i: Integer;
+begin
+  OutFile := ExpandConstant('{tmp}\ta-discover.txt');
+  DeleteFile(OutFile);
+
+  ScriptFile := ExpandConstant('{tmp}\ta-discover.ps1');
+  PsScript :=
+    '$ErrorActionPreference = ''SilentlyContinue''' + #13#10 +
+    '$out = ''OUTFILE''' + #13#10 +
+    '$udp = New-Object System.Net.Sockets.UdpClient(0)' + #13#10 +
+    'function Enc([string]$s) { $b = [System.Text.Encoding]::ASCII.GetBytes($s); return [byte[]]($b.Length) + $b }' + #13#10 +
+    '$q = [byte[]](0,0,0,0,0,1,0,0,0,0,0,0)' + #13#10 +
+    '$q = [byte[]]($q + (Enc ''_theta-suite'') + (Enc ''_tcp'') + (Enc ''local'') + [byte[]](0,12,0,1))' + #13#10 +
+    '$udp.Connect([System.Net.IPAddress]::Parse(''224.0.0.251''), 5353)' + #13#10 +
+    '[void]$udp.Send($q, $q.Length)' + #13#10 +
+    '$udp.Client.ReceiveTimeout = 4000' + #13#10 +
+    '$found = @{}' + #13#10 +
+    'while ($true) {' + #13#10 +
+    '  try {' + #13#10 +
+    '    $ep = New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Any), 0' + #13#10 +
+    '    $bytes = $udp.Receive([ref]$ep)' + #13#10 +
+    '  } catch { break }' + #13#10 +
+    '  $s = [System.Text.Encoding]::ASCII.GetString($bytes)' + #13#10 +
+    '  foreach ($m in [regex]::Matches($s, ''directoryHost=([A-Za-z0-9\.\-]+)'')) { $found[$m.Groups[1].Value] = $true }' + #13#10 +
+    '}' + #13#10 +
+    '$udp.Close()' + #13#10 +
+    '[System.IO.File]::WriteAllLines($out, ($found.Keys | ForEach-Object { ''https://'' + $_ }))';
+  StringChangeEx(PsScript, 'OUTFILE', OutFile, True);
+  if not SaveStringToFile(ScriptFile, PsScript, False) then begin
+    MsgBox('Could not stage the discovery script.', mbError, MB_OK);
+    Exit;
+  end;
+
+  if not Exec('powershell.exe',
+      '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptFile + '"',
+      '', SW_HIDE, ewNoWait, ErrorCode) then begin
+    MsgBox('Could not start the discovery script: ' + SysErrorMessage(ErrorCode), mbError, MB_OK);
+    Exit;
+  end;
+
+  // The script writes its result file (possibly empty) after one query round.
+  Tries := 0;
+  while (Tries < 24) and (not FileExists(OutFile)) do begin
+    Sleep(250);
+    Inc(Tries);
+  end;
+
+  FoundUrl := '';
+  if FileExists(OutFile) and LoadStringsFromFile(OutFile, Lines) and (GetArrayLength(Lines) >= 1) then
+    FoundUrl := Trim(Lines[0]);
+  DeleteFile(OutFile);
+
+  if FoundUrl <> '' then begin
+    ServerURLEdit.Text := FoundUrl;
+    ServerURL := FoundUrl;
+    if GetArrayLength(Lines) > 1 then begin
+      Msg := 'Found multiple theta-suite sites; using:' + #13#10 + FoundUrl + #13#10#13#10 + 'Also found:';
+      for i := 1 to GetArrayLength(Lines) - 1 do
+        Msg := Msg + #13#10 + Trim(Lines[i]);
+      MsgBox(Msg, mbInformation, MB_OK);
+    end;
+  end else
+    MsgBox('No theta-suite site announced itself on the local network (mDNS browse timed out). '
+      + 'Enter the Theta Directory URL manually.', mbInformation, MB_OK);
 end;
 
 procedure CreateAgentConfigPage();
@@ -348,9 +443,18 @@ begin
   ServerURLEdit.Width := AgentConfigPage.SurfaceWidth;
   ServerURLEdit.Text := ServerURL;
 
+  DiscoverButton := TNewButton.Create(AgentConfigPage);
+  DiscoverButton.Parent := AgentConfigPage.Surface;
+  DiscoverButton.Top := ServerURLEdit.Top + ServerURLEdit.Height + ScaleY(10);
+  DiscoverButton.Left := ServerURLEdit.Left;
+  DiscoverButton.Caption := 'Discover local Directory (mDNS)...';
+  DiscoverButton.Width := WizardForm.CalculateButtonWidth([DiscoverButton.Caption]);
+  DiscoverButton.Height := ScaleY(23);
+  DiscoverButton.OnClick := @OnDiscoverClick;
+
   OpenSSOButton := TNewButton.Create(AgentConfigPage);
   OpenSSOButton.Parent := AgentConfigPage.Surface;
-  OpenSSOButton.Top := ServerURLEdit.Top + ServerURLEdit.Height + ScaleY(10);
+  OpenSSOButton.Top := DiscoverButton.Top + DiscoverButton.Height + ScaleY(6);
   OpenSSOButton.Left := ServerURLEdit.Left;
   OpenSSOButton.Caption := 'Log in to the Directory and get a join key...';
   OpenSSOButton.Width := WizardForm.CalculateButtonWidth([OpenSSOButton.Caption]);
@@ -454,7 +558,7 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   if WizardSilent() then Exit;
   if (CurPageID = AgentConfigPage.ID) then begin
-    ServerURL := Trim(ServerURLEdit.Text);
+    ServerURL := NormalizeUrl(ServerURLEdit.Text);
     JoinKey := Trim(JoinKeyEdit.Text);
   end else if (CurPageID = FeaturesPage.ID) then begin
     SsoLogon := SsoCheck.Checked;
@@ -514,9 +618,11 @@ begin
   AppPath := ExpandConstant('{app}');
   StringChangeEx(AppPath, '\', '\\', True);
 
-  SetArrayLength(Lines, 18);
+  SetArrayLength(Lines, 19);
   Lines[0]  := '# theta-agent configuration (written by installer)';
-  Lines[1]  := 'server_url: "' + ServerURL + '"';
+  // NormalizeUrl: a trailing slash in server_url would leak into URLs the
+  // agent builds (the double-slash /install-agent bug).
+  Lines[1]  := 'server_url: "' + NormalizeUrl(ServerURL) + '"';
   Lines[2]  := 'auth_token: "' + AuthToken + '"';
   Lines[3]  := 'join_key: "' + JoinKey + '"';
   Lines[4]  := 'public_key: "' + PublicKey + '"';
@@ -533,6 +639,10 @@ begin
   Lines[15] := '  iam: false';
   Lines[16] := '  reboot: ' + BStr(CapReboot);
   Lines[17] := '  arbitrary_bash: false';
+  if CpName <> '' then
+    Lines[18] := 'credential_provider_name: "' + CpName + '"'
+  else
+    Lines[18] := '';
   SaveStringsToUTF8FileWithoutBOM(ConfigPath, Lines, False);
 end;
 

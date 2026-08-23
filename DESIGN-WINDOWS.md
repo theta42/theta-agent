@@ -1,6 +1,7 @@
 # theta-agent on Windows — design
 
-Status: **planning / design draft**. Companion to `DESIGN.md`, which describes the
+Status: **shipped** (most sections implemented; remaining gaps tracked in §2 and
+docs/KNOWN_ISSUES.md). Companion to `DESIGN.md`, which describes the
 Linux-first agent. This document covers bringing the agent to Windows as a first-class
 platform, optimized for **air-gapped** deployment: everything the host needs ships in
 one installer, and nothing on the target machine requires internet access.
@@ -159,6 +160,11 @@ LogonUI (Secure Desktop)
 - **Security note.** The password crosses loopback as a plaintext LDAP simple bind, then
   rides the already-TLS WSS tunnel; the agent never parses or stores it. Loopback-only
   listener, no inbound exposure.
+- **White-labeling (shipped).** The text under the logon tile is the default value of
+  the provider's registration key under `HKLM\...\Authentication\Credential Providers\<CLSID>`;
+  the agent rewrites it from `credential_provider_name` in `agent.yml` (or the installer's
+  `/CP_NAME=` parameter) after every seed. The tile bitmap is a DLL resource and needs a
+  provider rebuild — see `docs/WHITE_LABELING.md`.
 
 ### Alternative (documented, not chosen)
 

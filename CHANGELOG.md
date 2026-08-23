@@ -1,3 +1,31 @@
+## [Unreleased]
+
+### Added
+- **White-labeling for the Windows logon tile.** New `credential_provider_name`
+  in `agent.yml` (and a `/CP_NAME=` installer parameter) replaces the stock
+  "OpenCredential <version>" text under the credential-provider tile on the
+  Windows logon screen. The provider is located via its `InprocServer32` DLL
+  path, branding is re-applied after every OpenCredential seed (the vendor
+  installer resets the registration on upgrade), and failures are logged but
+  never block logon. See `docs/WHITE_LABELING.md`; `credential_provider_logo`
+  is reserved until the provider ships a configurable bitmap.
+- **mDNS auto-discovery in the Windows installer wizard.** New "Discover local
+  Directory (mDNS)..." button on the connection page browses
+  `_theta-suite._tcp.local` (same announcement theta-gateway publishes for
+  agent local discovery) and pre-fills the Directory URL from its TXT
+  `directoryHost` — parity with what `install.sh` has done on Linux.
+
+### Fixed
+- **`theta-agent update` no longer fails on Windows.** The CLI self-update path
+  used a plain rename over the running service exe, which Windows locks; it now
+  stages `<self>.new` and hands the swap to the detached session helper (the
+  same flow remote `update_binary` already used). Unix keeps the direct rename.
+- **Installer no longer produces double-slash URLs.** A Directory URL pasted
+  with a trailing slash (`https://sso.example.com/`) made the "Log in to the
+  Directory" button open `https://sso.example.com//install-agent/authorize?...`,
+  which some deployments reject. All URL handling in the wizard and in the
+  written `agent.yml` now strips trailing slashes.
+
 ## [2.8.3] - 2026-08-22
 - Added docs/KNOWN_ISSUES.md for multi-site known limits and tradeoffs.
 
