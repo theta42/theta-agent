@@ -1,3 +1,71 @@
+## [v2.9.1] - 2026-08-23
+
+### Added
+- **The installer now always bundles the current WireGuard for Windows
+  release.** `setup-build-env.ps1` resolves the latest amd64 MSI from
+  download.wireguard.com on every build (upstream keeps only the current
+  version there), verifies its Authenticode signature against WireGuard's own
+  certificate (they publish no hash files), computes the sha256, and re-pins
+  it into vendor-manifest.json so repeat/offline builds stay reproducible and
+  tamper-checked. The MSI filename flows into installer.iss via
+  `/DWireGuardMsi=`; upstream fetch failures fall back to the previously
+  pinned version instead of breaking the build. First run picked up
+  wireguard-amd64-1.1.msi (the pin had sat at 0.5.3 since 2024).
+
+### Fixed
+- **`install-service` could not upgrade an existing registration ("The
+  parameter is incorrect").** `mgr.Service.UpdateConfig` passes
+  `Config.ServiceType` to ChangeServiceConfig verbatim -- unlike CreateService
+  it has no zero-value defaulting, and 0 is not SERVICE_NO_CHANGE but an
+  invalid service type. Every upgrade therefore failed before it could rewrite
+  ImagePath or restart the daemon, silently (the [Run] step ignores exit
+  codes). The config now sets ServiceType/ErrorControl explicitly alongside
+  StartType.
+- **The Windows service died instantly on every start -- the daemon never ran
+  at all.** `CreateService` passed `"is", "auto"` as binary arguments,
+  cargo-culted from the x/sys/windows/svc/mgr doc example (where they are
+  arguments to *that example's* binary). SCM baked them into ImagePath, and
+  `runAgent` treats any positional argument as a config-file path, so the
+  daemon started with config path `is`, failed, and exited before binding the
+  tray IPC socket or dialing the Directory: red tray, "daemon socket not
+  available", host absent from the fleet. Fixed three ways: no more stray
+  arguments at creation; an explicit positional argument is only honored when
+  it actually exists on disk; and upgrades rewrite ImagePath so previously
+  broken installs are repaired on the spot. Service startup errors now also go
+  to `%ProgramData%\Theta42\agent.log` (a service has no stderr), and
+  `install-service` waits for RUNNING and warns loudly instead of exiting
+  while the daemon is silently dying.
+- **The Windows installer's "get a join key" flow never actually captured the
+  key.** The loopback listener's request-line regex was written with C-style
+  escapes (`^\\w+\\s+...`) inside a PowerShell string -- but PowerShell does
+  not process backslash escapes, so the regex demanded a *literal* backslash
+  and never matched a real request. Every callback returned an empty join key,
+  the installer silently pre-filled nothing, and the installed agent sat with
+  blank credentials retrying forever (red tray, host never appears in the
+  Directory). The listener also now tolerates browsers' speculative/preconnect
+  sockets (requests without a key get a 400 and it keeps listening) and gives
+  up after 110s instead of hanging forever.
+- **Upgrading the Windows agent failed to replace a running tray binary.**
+  The installer never stopped the tray or the theta-agent service, so both exe
+  images stayed locked during file copy. `PrepareToInstall` now kills the tray
+  and stops the service (waiting for SCM to report STOPPED) before files are
+  replaced, and `install-service` upgrades an existing registration in place
+  (stop -> update config -> start) instead of early-returning and leaving the
+  old daemon running.
+- **Upgrades wiped the machine's enrollment.** `agent.yml` was rewritten on
+  every install run with blank `auth_token` / `public_key`, orphaning the
+  issued token (only its hash lives on the server). The installer now carries
+  the existing `server_url`, `auth_token`, `public_key` and `join_key` across
+  an upgrade unless new credentials are explicitly supplied.
+- **mDNS discovery did not work from the Windows installer.** The wizard's
+  hand-rolled raw-UDP query is gone; the "Discover local Directory" button now
+  runs the bundled agent's own hardened browse (`theta-agent discover
+  --urls-only`, incl. the IPv6-disabled Query workaround), and a narrow,
+  program-scoped Windows Firewall allow rule (inbound UDP 5353 for the agent
+  binary) is added for the browse and removed afterwards. A matching permanent
+  rule is installed for the agent itself so runtime local-discovery works
+  behind the default firewall posture; both rules are removed on uninstall.
+
 ## [v2.9.0] - 2026-08-22
 
 ### Added

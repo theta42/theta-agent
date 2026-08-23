@@ -1,10 +1,10 @@
-{
-  "comment": "Pinned third-party assets bundled into the Windows installer (DESIGN-WINDOWS.md §8). The setup script (scripts/setup-build-env.ps1) fetches these into installer/windows/vendor/ and verifies sha256; nothing is committed to git.",
+﻿{
+  "comment": "Pinned third-party assets bundled into the Windows installer (DESIGN-WINDOWS.md Â§8). The setup script (scripts/setup-build-env.ps1) fetches these into installer/windows/vendor/ and verifies sha256; nothing is committed to git.",
   "assets": [
     {
-      "name": "wireguard-amd64-0.5.3.msi",
-      "url": "https://download.wireguard.com/windows-client/wireguard-amd64-0.5.3.msi",
-      "sha256": "76FCEC042C5989C5B816CD32EAED1E5B1C3B998A4B1C9ECA55F299E3314EF7E4",
+      "name": "wireguard-amd64-1.1.msi",
+      "url": "https://download.wireguard.com/windows-client/wireguard-amd64-1.1.msi",
+      "sha256": "6DAA5D37A9E2950DFB8C48B95AB8E562CB2BAD1C785D020F38F97BEA4C6A5566",
       "purpose": "Official WireGuard for Windows client (vendor-signed drivers install offline)"
     },
     {
@@ -17,7 +17,7 @@
       "name": "OpenCredentialInstaller-1.0.0.0.exe",
       "url": "https://github.com/pedropablobm/OpenCredential/releases/download/v1.0.0.0/OpenCredentialInstaller-1.0.0.0.exe",
       "sha256": "7687A99F0B3D6E910BBFB883C31231EB8C8F6E4439134CC3522A86CC63DA1A52",
-      "purpose": "OpenCredential (BSD-3 pGina fork) credential provider installer — LDAP-backed Windows logon"
+      "purpose": "OpenCredential (BSD-3 pGina fork) credential provider installer â€” LDAP-backed Windows logon"
     }
   ],
   "toolchain": {

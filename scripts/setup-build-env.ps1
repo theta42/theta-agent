@@ -184,6 +184,81 @@ function Add-ToUserPath($dir) {
 }
 
 # ------------------------------------------------ Vendor assets (idempotent) --
+
+# WireGuard's windows-client directory lists only the CURRENT release (old
+# versions are removed), and no hash files are published -- upstream's
+# integrity model is Authenticode signing ("WireGuard Development Team"). So
+# on every run we resolve the latest amd64 MSI, verify its signature, compute
+# its sha256, and re-pin it into vendor-manifest.json (the pinned hash keeps
+# repeat builds/offline rebuilds reproducible and tamper-checked).
+function Update-WireGuard {
+    $asset = $manifest.assets | Where-Object { $_.name -like 'wireguard-*' } | Select-Object -First 1
+    if (-not $asset) { return }
+
+    $indexUrl = 'https://download.wireguard.com/windows-client/'
+    try {
+        $index = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing -TimeoutSec 30
+        if ($index.Content -notmatch 'wireguard-amd64-([0-9]+(?:\.[0-9]+)*)\.msi') {
+            Write-Fail "wireguard: could not parse a version out of $indexUrl -- keeping $($asset.name)"
+            return
+        }
+        $latest = $matches[1]
+    } catch {
+        Write-Skip "wireguard: upstream index unreachable ($($_.Exception.Message)) -- keeping $($asset.name)"
+        return
+    }
+
+    $have = ''
+    if ($asset.name -match 'wireguard-amd64-([0-9.]+)\.msi') { $have = $matches[1] }
+    if ($have -eq $latest) {
+        Write-Info "wireguard: manifest already pins latest upstream version $latest"
+        return
+    }
+
+    $name = "wireguard-amd64-$latest.msi"
+    $url  = "$indexUrl$name"
+    Write-Step "wireguard: newer upstream version available ($have -> $latest)"
+    $tmp = Join-Path $env:TEMP $name
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 300
+
+        # No hash files upstream: trust nothing but a valid Authenticode
+        # signature from WireGuard's own certificate (subject has been
+        # 'CN=WireGuard LLC, O=WireGuard LLC, ...' since 2024; earlier certs
+        # said 'WireGuard Development Team' -- hence the CN-prefix match).
+        $sig = Get-AuthenticodeSignature -FilePath $tmp
+        if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'CN=WireGuard( LLC| Development Team)?,') {
+            Remove-Item $tmp -Force
+            Write-Fail "wireguard: $name signature check failed (status=$($sig.Status); subject='$($sig.SignerCertificate.Subject)') -- keeping $($asset.name)"
+            return
+        }
+        $sha = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToUpper()
+
+        Move-Item -Force $tmp (Join-Path $vendorDir $name)
+        Remove-Item (Join-Path $vendorDir $asset.name) -Force -ErrorAction SilentlyContinue
+        Set-Content -Path (Join-Path $vendorDir "$name.sha256") -Value $sha -NoNewline
+
+        # Re-pin the resolved artifact into the manifest (regex-scoped to the
+        # wireguard asset so the rest of the file stays byte-for-byte).
+        $raw = Get-Content $manifestPath -Raw
+        $blockOld = '"name": "' + [regex]::Escape($asset.name) + '"[\s\S]*?"purpose"'
+        $blockNew = """name"": ""$name"",`r`n      ""url"": ""$url"",`r`n      ""sha256"": ""$sha"",`r`n      ""purpose"""
+        $updated = [regex]::Replace($raw, $blockOld, $blockNew, 'IgnoreCase')
+        if ($updated -eq $raw) {
+            Write-Fail "wireguard: could not re-pin $name into vendor-manifest.json"
+            return
+        }
+        Set-Content -Path $manifestPath -Value $updated -NoNewline -Encoding UTF8
+
+        # Refresh the in-memory copy Fetch-Asset / Assert-BuildReady iterate.
+        $script:manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        Write-OK "wireguard: bundled $name (sha256 verified, Authenticode-signed)"
+    } catch {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        Write-Fail "wireguard: fetching $url failed ($($_.Exception.Message)) -- keeping $($asset.name)"
+    }
+}
+
 function Fetch-Asset($asset) {
     $dest = Join-Path $vendorDir $asset.name
     $ok = $false
@@ -213,6 +288,7 @@ function Fetch-Asset($asset) {
 function Ensure-Vendor {
     Write-Step "Vendor assets (pinned in vendor-manifest.json)"
     New-Item -ItemType Directory -Force -Path $vendorDir | Out-Null
+    Update-WireGuard
     foreach ($a in $manifest.assets) {
         Fetch-Asset $a
     }
@@ -287,7 +363,9 @@ function Invoke-Build {
     }
 
     Write-Step "Compiling installer with ISCC (version $appVer)"
-    & $iscc "/DMyAppVersion=$appVer" (Join-Path $RepoRoot 'installer\windows\installer.iss')
+    $wg = $manifest.assets | Where-Object { $_.name -like 'wireguard-*' } | Select-Object -First 1
+    $wgMsi = if ($wg) { $wg.name } else { '' }
+    & $iscc "/DMyAppVersion=$appVer" "/DWireGuardMsi=$wgMsi" (Join-Path $RepoRoot 'installer\windows\installer.iss')
     if ($LASTEXITCODE -ne 0) { Write-Fail 'ISCC compile failed' }
 }
 

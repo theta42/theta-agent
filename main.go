@@ -53,8 +53,14 @@ func runAgent() {
 
 	// Attempt to load configuration
 	configPath := defaultConfigPath()
+	// An explicit positional argument only overrides the default when it is
+	// actually a file -- installs before v2.9.1 had ImagePath arguments
+	// ("is auto") that were misread as a config path here and killed the
+	// daemon on every service start.
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		configPath = os.Args[1]
+		if _, err := os.Stat(os.Args[1]); err == nil {
+			configPath = os.Args[1]
+		}
 	}
 
 	cm, err := NewConfigManager(configPath)

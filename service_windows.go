@@ -11,6 +11,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows/svc"
 )
@@ -21,6 +22,15 @@ func maybeRunAsService() bool {
 	isSvc, err := svc.IsWindowsService()
 	if err != nil || !isSvc {
 		return false
+	}
+	// A service has no stderr: without this, every startup error
+	// (log.Fatalf in runAgent included) vanishes and the only symptom is a
+	// tray that retries its socket forever. Log to the shared data dir so
+	// failures are diagnosable on the box.
+	if f, err := os.OpenFile(filepath.Join(windowsDataDir(), "agent.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		log.SetOutput(f)
+		defer f.Close()
 	}
 	if err := svc.Run("theta-agent", &agentService{}); err != nil {
 		log.Printf("service: %v", err)
