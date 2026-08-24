@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"testing"
+	"time"
 )
 
 // listenLocal starts a throwaway TCP listener and returns its host:port.
@@ -119,5 +120,84 @@ func TestDetectHomePrivateDirectoryAddress(t *testing.T) {
 	cfg := &Config{ServerURL: "https://127.0.0.1:" + port}
 	if !detectHome(cfg, "", "", "", true) {
 		t.Fatalf("a reachable private directory address should mean home")
+	}
+}
+
+// resetLocalSiteSeen clears the mDNS sighting so a test that does not care
+// about it is not influenced by one that does. Tests in this file run in the
+// same process and share the package-level state.
+func resetLocalSiteSeen(t *testing.T) {
+	t.Helper()
+	localSite.mu.Lock()
+	localSite.seen = false
+	localSite.polled = time.Time{}
+	localSite.mu.Unlock()
+}
+
+// The regression this exists for: on a laptop sitting on its own site's LAN,
+// with the directory named by a public FQDN and the site carrying no dnsHost,
+// every other signal is unavailable -- so the agent logged "assuming away"
+// once a minute while local discovery, three lines earlier in the same log,
+// reported seeing that exact site on the link.
+func TestDetectHomeMdnsSightingIsConclusive(t *testing.T) {
+	resetLocalSiteSeen(t)
+	setLocalSiteSeen(true)
+	defer resetLocalSiteSeen(t)
+
+	cfg := &Config{ServerURL: "wss://sso.example.com"}
+	// No LAN endpoint, no public IPs on either side: exactly the shipped
+	// configuration that produced "assuming away" forever.
+	if !detectHome(cfg, "", "", "", true) {
+		t.Fatalf("the site answered mDNS on this link; that is proof of being home")
+	}
+}
+
+func TestDetectHomeMdnsAbsenceDoesNotForceHome(t *testing.T) {
+	resetLocalSiteSeen(t)
+	setLocalSiteSeen(false)
+	defer resetLocalSiteSeen(t)
+
+	cfg := &Config{ServerURL: "wss://sso.example.com"}
+	if detectHome(cfg, "9.9.9.9", "1.2.3.4", "", true) {
+		t.Fatalf("mismatched public IPs with no sighting must read as away")
+	}
+}
+
+// A wedged or disabled discovery loop must not answer the question. Its last
+// reading goes stale and detection falls through to the weaker signals, rather
+// than pinning the agent to whatever it happened to see hours ago -- the same
+// failure mode as the old `homePublicIP == ""` clause.
+func TestDetectHomeStaleMdnsSightingIsIgnored(t *testing.T) {
+	resetLocalSiteSeen(t)
+	defer resetLocalSiteSeen(t)
+
+	localSite.mu.Lock()
+	localSite.seen = true
+	localSite.polled = time.Now().Add(-2 * localSiteSeenTTL)
+	localSite.mu.Unlock()
+
+	if seen, fresh := localSiteSeen(); fresh || seen {
+		t.Fatalf("a sighting older than the TTL must not be reported fresh (seen=%v fresh=%v)", seen, fresh)
+	}
+	cfg := &Config{ServerURL: "wss://sso.example.com"}
+	if detectHome(cfg, "9.9.9.9", "1.2.3.4", "", true) {
+		t.Fatalf("a stale sighting must not decide the answer")
+	}
+}
+
+// isPrivateHost only ever inspected the literal, so every deployment that names
+// its directory by FQDN -- which is all of them -- skipped the probe entirely.
+func TestResolvesPrivateFollowsNamesNotJustLiterals(t *testing.T) {
+	if !resolvesPrivate("10.1.2.3:443") {
+		t.Fatalf("a private literal must still count")
+	}
+	if !resolvesPrivate("localhost:443") {
+		t.Fatalf("localhost resolves to a loopback address and must count")
+	}
+	if resolvesPrivate("8.8.8.8:443") {
+		t.Fatalf("a public literal must not count")
+	}
+	if resolvesPrivate("no-such-host.invalid:443") {
+		t.Fatalf("an unresolvable name must not count")
 	}
 }
