@@ -13,16 +13,22 @@ import (
 )
 
 type Capabilities struct {
-	Telemetry           bool     `yaml:"telemetry"`
-	ConfigureLDAP       bool     `yaml:"configure_ldap"`
-	Reboot              bool     `yaml:"reboot"`
-	ServiceControl      []string `yaml:"service_control"`
-	ArbitraryBash       bool     `yaml:"arbitrary_bash"`
-	LdapTunnel          bool     `yaml:"ldap_tunnel"`
-	Secrets             bool     `yaml:"secrets"`
-	IAM                 bool     `yaml:"iam"`
-	WireGuard           bool     `yaml:"wireguard"`
-	ServiceRegistration bool     `yaml:"service_registration"`
+	Telemetry      bool     `yaml:"telemetry"`
+	ConfigureLDAP  bool     `yaml:"configure_ldap"`
+	Reboot         bool     `yaml:"reboot"`
+	ServiceControl []string `yaml:"service_control"`
+	ArbitraryBash  bool     `yaml:"arbitrary_bash"`
+	LdapTunnel     bool     `yaml:"ldap_tunnel"`
+	Secrets        bool     `yaml:"secrets"`
+	IAM            bool     `yaml:"iam"`
+	// A POINTER so an absent key is distinguishable from an explicit `false`.
+	// This capability now defaults ON (see WireGuardEnabled): it gates the
+	// whole auto-VPN path, and defaulting it off meant the tray's
+	// "auto-connect VPN when away" checkbox silently did nothing on every
+	// stock install -- the installer never wrote the key at all, so it was
+	// false by omission rather than by anyone's decision.
+	WireGuard           *bool `yaml:"wireguard"`
+	ServiceRegistration bool  `yaml:"service_registration"`
 }
 
 // SecretTarget maps a local template to a rendered target file and an optional
@@ -447,6 +453,16 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// WireGuardEnabled reports whether this agent may run the mesh tunnel.
+//
+// Absent means enabled: the capability gates auto-VPN, mesh enrolment and the
+// signed wireguard_apply/remove commands, and every config written by an older
+// installer omits it entirely. An explicit `wireguard: false` is still honoured
+// -- that is an operator saying no, rather than a key nobody ever wrote.
+func (c *Capabilities) WireGuardEnabled() bool {
+	return c.WireGuard == nil || *c.WireGuard
 }
 
 // CanManageService checks if a specific service is permitted to be restarted/stopped

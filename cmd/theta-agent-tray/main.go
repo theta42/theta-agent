@@ -76,11 +76,24 @@ type TrayStatus struct {
 	HomePublicIP  string    `json:"home_public_ip"`
 	StatusText    string    `json:"status_text"`
 	ConfigPath    string    `json:"config_path"`
+
+	Exits             []TrayExit `json:"exits,omitempty"`
+	CurrentExitSiteID *int       `json:"current_exit_site_id,omitempty"`
+}
+
+// TrayExit is one site this device may route its internet traffic through.
+type TrayExit struct {
+	SiteID  int    `json:"site_id"`
+	Name    string `json:"name"`
+	Country string `json:"country"`
+	City    string `json:"city"`
+	IsLocal bool   `json:"is_local"`
 }
 
 type TrayCommand struct {
 	Command string `json:"command"`
 	Value   bool   `json:"value"`
+	SiteID  *int   `json:"site_id,omitempty"`
 }
 
 
@@ -129,6 +142,7 @@ func onReady() {
 	systray.AddSeparator()
 	mAutoVPN   = systray.AddMenuItemCheckbox("Auto-connect VPN when away", "Automatically connect to home via WireGuard when not on the home LAN", false)
 	mVPNToggle = systray.AddMenuItem("Connect VPN", "Manually connect or disconnect the WireGuard tunnel")
+	initExitMenu()
 	systray.AddSeparator()
 	mOpenConfig = systray.AddMenuItem("Open Config", "Open agent.yml in the default editor")
 	mReinit     = systray.AddMenuItem("Clear enrollment…", "Blank auth_token/public_key so the agent re-enrolls on reconnect")
@@ -266,6 +280,9 @@ func streamStatus(conn net.Conn) {
 
 func updateUI(s TrayStatus) {
 	currentStatus = s
+
+	// Exit picker. Cheap when the offered set has not changed.
+	syncExitMenu(s)
 
 	// Icon color. fyne.io/systray needs .ico on Windows; the PNG icons are
 	// wrapped in an ICO container (Windows Vista+ supports PNG-in-ICO).

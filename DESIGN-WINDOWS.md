@@ -48,7 +48,7 @@ The agent already compiles, runs, and enrolls on Windows. Validated against a li
 | Component | Runs as | Purpose |
 | :--- | :--- | :--- |
 | `theta-agent` | Windows service (SYSTEM, auto-start) | WSS to SSO, command dispatch, telemetry, LDAP byte-pump, loopback `/bind`, IAM, WG control |
-| `theta-agent-tray` | Per-user, logon autostart | Status icon, enrollment dialog, VPN control, auto-VPN |
+| `theta-agent-tray` | Per-user, logon autostart (Windows); systemd **user** unit (Linux) | Status icon, enrollment dialog, VPN control, auto-VPN, internet-exit picker, opening `agent.yml` |
 | `theta-agent-helper` (new) | Per-interactive-session, spawned by the service | Desktop controls that cannot run from session 0 |
 | OpenCredential CP DLL | Loaded by `LogonUI.exe` (Winlogon) | LDAP-backed Windows logon |
 | `WireGuardTunnel$<name>` | Service installed by WireGuard client | Mesh tunnel |
@@ -111,7 +111,17 @@ jump-host mints peers and exit sites, renders standard `wg0.conf`
 (`nodejs/utils/wg_conf.js`), and serves `/api/wireguard/peers/:id/conf` + QR. The
 generated config is compatible with the WireGuard Windows client.
 
-### Agent side — to build
+### Agent side — built
+
+Implemented as described below, plus two things the original sketch left out:
+
+- **The agent holds its own key.** It generates a Curve25519 keypair on first
+  connect and registers only the public half (PROTOCOL.md §6). The Directory
+  renders configs with a `PrivateKey = <generated on this device>` placeholder,
+  which the agent substitutes locally — the server never holds a client private
+  key. The original plan had the server "include the peer conf" with no account
+  of where the private half came from.
+- **Exit selection from the tray**, not only from the web UI (PROTOCOL.md §7).
 
 1. **Delivery:** new signed command `wireguard_apply` pushed over the existing WSS
    channel (same model as `iam_apply`): server includes the peer conf; agent verifies the
@@ -125,7 +135,13 @@ generated config is compatible with the WireGuard Windows client.
    existence) → set `vpn_active` → tray turns blue; drives the existing auto-VPN logic in
    `home_detect.go`.
 4. **Auto-VPN:** when away-from-home and `auto_vpn` is set, bring the tunnel up; the tray
-   checkbox now persists the preference to `agent.yml` (today it is memory-only).
+   checkbox persists the preference to `agent.yml`.
+
+   Away-from-home is decided by reachability first — a TCP probe of the site's
+   resolver at its *physical* LAN address, which only answers on that LAN — and
+   falls back to comparing public IPs. With no signal at all the agent assumes
+   **away**: a false "home" silently disables auto-VPN, while a false "away"
+   only costs a tunnel. See `home_reach.go`.
 
 ## 6. LDAP: directory logins and the byte-pump
 

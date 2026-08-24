@@ -223,7 +223,7 @@ func TestHandleCommand(t *testing.T) {
 			name: "wireguard_apply allowed",
 			cfg: &Config{
 				PublicKey:    testPubKeyB64(),
-				Capabilities: Capabilities{WireGuard: true},
+				Capabilities: Capabilities{WireGuard: boolPtr(true)},
 			},
 			msg: WSMessage{
 				Type: "wireguard_apply",
@@ -239,7 +239,7 @@ func TestHandleCommand(t *testing.T) {
 			name: "wireguard_apply denied",
 			cfg: &Config{
 				PublicKey:    testPubKeyB64(),
-				Capabilities: Capabilities{WireGuard: false},
+				Capabilities: Capabilities{WireGuard: boolPtr(false)},
 			},
 			msg: WSMessage{
 				Type:    "wireguard_apply",
@@ -253,12 +253,12 @@ func TestHandleCommand(t *testing.T) {
 			name: "wireguard_remove allowed",
 			cfg: &Config{
 				PublicKey:    testPubKeyB64(),
-				Capabilities: Capabilities{WireGuard: true},
+				Capabilities: Capabilities{WireGuard: boolPtr(true)},
 			},
-			msg:             WSMessage{Type: "wireguard_remove"},
-			signed:          true,
-			expectedStatus:  "ok",
-			expectedCmd:     []string{"wg-quick", "down", "theta-mesh"},
+			msg:            WSMessage{Type: "wireguard_remove"},
+			signed:         true,
+			expectedStatus: "ok",
+			expectedCmd:    []string{"wg-quick", "down", "theta-mesh"},
 		},
 		{
 			name: "heartbeat_ack is silently ignored",
@@ -422,3 +422,7 @@ func TestCanonicalizeMatchesServerForm(t *testing.T) {
 		t.Errorf("canonical form mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
+
+// boolPtr is for the capability fields that are pointers so an absent key is
+// distinguishable from an explicit false.
+func boolPtr(b bool) *bool { return &b }

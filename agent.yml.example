@@ -98,8 +98,15 @@ capabilities:
   # Apply node IAM (sudo rules, SSH keys, access control, revocation) (DESIGN.md ??6)
   iam: true
 
-  # Accept signed wireguard_apply/wireguard_remove commands (DESIGN-WINDOWS.md ??5)
-  wireguard: false
+  # Mesh tunnel: auto-VPN, mesh enrolment (the agent registers its own
+  # WireGuard public key so it appears in the directory and on the gateway),
+  # and the signed wireguard_apply/wireguard_remove commands
+  # (DESIGN-WINDOWS.md ??5).
+  #
+  # Defaults to true when the key is absent, so an older agent.yml that never
+  # mentioned it gains the capability on upgrade. Set it false to opt out --
+  # an explicit false is honoured.
+  wireguard: true
 
   # Accept signed register_service/unregister_service commands from Theta
   # Directory (and allow local `theta-agent register` to push changes to it).

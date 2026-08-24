@@ -72,7 +72,15 @@ either drops the agent's live connection immediately. See `PROTOCOL.md` §1.1.
 | `iam` | High | Applies node IAM. | Writes sudo rules, SSH keys, access control; revokes sessions (DESIGN.md §6). |
 | `reboot` | High | System reboot. | Triggers an immediate host reboot. |
 | `service_control` | High | Service management. | Restarts services listed in the allowed list. |
+| `service_registration` | Moderate | Service inventory. | Registers systemd/docker services as child resources of this host. |
+| `wireguard` | Moderate | Mesh tunnel. | Mesh enrolment, auto-VPN, and signed `wireguard_apply`/`wireguard_remove`. **Defaults on when the key is absent** — see below. |
 | `arbitrary_bash` | CRITICAL | Raw bash execution. | Executes any script sent by the manager as root. |
+
+`wireguard` is the one capability that defaults **on**. Every other capability
+is off unless written; this one is enabled when the key is missing entirely,
+because it gates the whole auto-VPN path and older installers never wrote it —
+so the tray's "auto-connect VPN when away" silently did nothing on a stock
+install. An explicit `wireguard: false` is still honoured.
 
 ## Configuration
 
@@ -87,10 +95,60 @@ location: "dc-01-rack-12"
 capabilities:
   telemetry: true
   configure_ldap: true
+  wireguard: true          # mesh + auto-VPN; on by default if omitted
   reboot: true
   service_control: ["nginx", "gitea", "sssd"]
   arbitrary_bash: false
 ```
+
+Settings can be merged into an existing file without hand-editing it — this
+replaces keys that are present, appends ones that are not, and leaves comments
+and nested blocks alone:
+
+```bash
+theta-agent config-set server_url=https://sso.example.com location=dc-01
+```
+
+It handles top-level keys only, and refuses a key that exists solely inside a
+nested block (`reboot` under `capabilities`, say) rather than silently lifting
+it out and dropping the capability.
+
+## Desktop tray
+
+`theta-agent-tray` is a separate binary that runs in the logged-in user's
+session and talks to the daemon over a local socket. It shows connection state
+as an icon colour (red: no directory, yellow: connected but away, green: home,
+blue: tunnel up) and offers:
+
+- **Auto-connect VPN when away** — brings the mesh tunnel up off the home
+  network and drops it again on return. Needs the `wireguard` capability.
+- **Connect / Disconnect VPN** — manual override.
+- **Internet exit** — route this machine's internet traffic through another
+  site, or break out locally. The same choices the Directory offers, on the
+  machine itself.
+- **Open Config**, **Clear enrollment**, **Quit Tray**.
+
+The Linux installer registers it as a systemd **user** unit
+(`/etc/systemd/user/theta-agent-tray.service`), enables it for future sessions,
+and starts it in any graphical session already running — so it appears without a
+re-login. It exits silently on a host with no graphical session, which is why it
+is safe to install everywhere.
+
+> Two things deliberately run in the tray rather than the daemon: opening
+> `agent.yml`, and nothing else touching the display. The daemon is a root
+> systemd service with no `DISPLAY` on Linux and a SYSTEM service in session 0
+> on Windows — neither can put a window on a user's screen.
+
+## Mesh membership
+
+With the `wireguard` capability on, the agent generates a WireGuard keypair on
+first connect and registers the **public** half with the Directory. The private
+half is written to `/etc/theta42/wg_private.key` (`0600`, root only) — or
+`%ProgramData%\Theta42\wg\private.key` on Windows — and never leaves the host.
+
+That is what makes an installed agent show up as a device in the Directory and
+on the site gateway without anyone copying a config around. Enrolment is
+idempotent, so reconnecting does not create duplicate devices.
 
 ## Installation
 

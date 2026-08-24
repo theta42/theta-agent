@@ -16,7 +16,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -119,6 +118,27 @@ func (ts *trayServer) handleCommand(cmd TrayCommand) {
 				log.Printf("[tray-ipc] could not clear enrollment: %v", err)
 			}
 		}
+	case "set_exit":
+		// The tray only ever steers its OWN device: the daemon calls the
+		// agent-scoped endpoint with its own credential, so there is no device
+		// id on the wire that could name someone else's host.
+		where := "local breakout"
+		if cmd.SiteID != nil {
+			where = fmt.Sprintf("site %d", *cmd.SiteID)
+		}
+		log.Printf("[tray-ipc] routing this device through %s", where)
+		if currentCM == nil {
+			log.Printf("[tray-ipc] cannot set exit: no config loaded")
+			break
+		}
+		cfg := currentCM.Get()
+		if err := setMeshExit(cfg, cmd.SiteID); err != nil {
+			log.Printf("[tray-ipc] could not set exit: %v", err)
+			break
+		}
+		// Refresh so the tray's checkmark reflects what the directory now
+		// holds, rather than what we optimistically assumed.
+		refreshMeshExits(cfg)
 	case "open_config":
 		// Kept only for trays older than the ConfigPath field. This process
 		// cannot open a window: on Linux it is a root systemd service with no
@@ -156,27 +176,18 @@ func (ts *trayServer) Push(status TrayStatus) {
 
 // UpdateTrayStatus computes the current TrayColor from the known state
 // and pushes it to all connected tray clients.
-func UpdateTrayStatus(connected bool, agentPublicIP, homePublicIP string, vpnActive, autoVPN bool, siteName, serverURL string) {
+// UpdateTrayStatus pushes the current state to the tray.
+//
+// isHome is computed by the caller (home_detect.checkAndPush) rather than
+// re-derived here. This function used to carry its own copy of the rule --
+// including the `|| homePublicIP == ""` clause that made every agent report
+// "Home" forever, since nothing ever supplied a home public IP -- so the icon
+// and the auto-VPN decision could disagree about the same moment.
+func UpdateTrayStatus(connected, isHome bool, agentPublicIP, homePublicIP string, vpnActive, autoVPN bool, siteName string) {
 	color := ColorRed
 	statusText := "Not connected to directory"
-	isHome := false
 
 	if connected {
-		// Server URL is local (localhost, 127.0.0.1, LAN IP, or .local)
-		isLocalServer := strings.Contains(serverURL, "localhost") ||
-			strings.Contains(serverURL, "127.0.0.1") ||
-			strings.Contains(serverURL, ".local") ||
-			strings.Contains(serverURL, "192.168.") ||
-			strings.Contains(serverURL, "10.")
-
-		// On Home LAN if:
-		// 1) Both agent & home public IPs are known and match, OR
-		// 2) Connecting to a local/LAN SSO server, OR
-		// 3) homePublicIP is not yet set by directory (default to local home)
-		if (homePublicIP != "" && agentPublicIP != "" && agentPublicIP == homePublicIP) || isLocalServer || homePublicIP == "" {
-			isHome = true
-		}
-
 		if vpnActive {
 			color = ColorBlue
 			statusText = fmt.Sprintf("VPN active → %s", siteName)
@@ -189,6 +200,8 @@ func UpdateTrayStatus(connected bool, agentPublicIP, homePublicIP string, vpnAct
 		}
 	}
 
+	exits, currentExit := MeshExits()
+
 	globalTrayServer.Push(TrayStatus{
 		Color:         color,
 		Connected:     connected,
@@ -200,6 +213,9 @@ func UpdateTrayStatus(connected bool, agentPublicIP, homePublicIP string, vpnAct
 		HomePublicIP:  homePublicIP,
 		StatusText:    statusText,
 		ConfigPath:    defaultConfigPath(),
+
+		Exits:             exits,
+		CurrentExitSiteID: currentExit,
 	})
 }
 
