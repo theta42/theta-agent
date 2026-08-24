@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -87,8 +88,15 @@ func TestLoadOrCreateWireGuardKeyIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0600 {
-		t.Fatalf("key file mode is %04o, want 0600", perm)
+	// Unix permission bits only. Windows has no POSIX mode: Go reports 0666 for
+	// any file it created regardless of the mode passed to WriteFile, so
+	// asserting 0600 there fails on a file that is in fact protected -- the
+	// key's confidentiality on Windows comes from the ACL on
+	// %ProgramData%\Theta42, which the installer sets.
+	if runtime.GOOS != "windows" {
+		if perm := fi.Mode().Perm(); perm != 0600 {
+			t.Fatalf("key file mode is %04o, want 0600", perm)
+		}
 	}
 }
 

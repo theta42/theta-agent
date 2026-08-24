@@ -1,3 +1,12 @@
+## [v2.11.1] - 2026-08-24
+
+### Fixed
+- **v2.11.0 shipped without any Windows artifacts.** A test added in that release asserted the WireGuard key file's Unix mode (`0600`) unconditionally. Windows has no POSIX mode bits — Go reports `0666` for any file it created, whatever mode `WriteFile` was given — so the assertion failed on the Windows build job, which runs `go test` before compiling the installer. The release published its Linux binaries and then stopped: no `theta-agent-*-windows-amd64-setup.exe`, no Windows agent, tray or helper executables.
+
+  The check is now POSIX-only, matching the guard `config_test.go` already used for exactly this reason. On Windows the key's confidentiality comes from the ACL the installer sets on `%ProgramData%\Theta42`, not from mode bits.
+
+  No code changed — v2.11.0's binaries are correct, they were simply never built. Anyone who installed on Linux from v2.11.0 is unaffected; Windows installs pointing at `releases/latest` were broken until this release.
+
 ## [v2.11.0] - 2026-08-24
 
 ### Added
