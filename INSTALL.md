@@ -34,8 +34,23 @@ curl -fsSL https://sso.example.com/resources/theta-agent/install.sh | sh -s -- \
 ### What this does:
 1. Downloads the latest `theta-agent` binary.
 2. Decodes the base64 configuration string into `/etc/theta42/agent.yml`.
-3. Installs a systemd service unit.
-4. Starts the agent automatically.
+   Re-running against an existing config **merges** rather than overwrites:
+   values you pass are updated, keys the file lacks are added, and comments and
+   nested blocks are left alone. You no longer need to delete `agent.yml` first
+   for new settings to take effect.
+3. Installs a systemd service unit and starts the agent.
+4. Installs the desktop tray as a systemd **user** unit
+   (`/etc/systemd/user/theta-agent-tray.service`), enables it for future
+   sessions, and starts it in any graphical session already running — so it
+   appears without a re-login. It exits silently on a host with no graphical
+   session. Any older `/etc/xdg/autostart/theta-agent-tray.desktop` is removed
+   so the two cannot both launch.
+
+On first connect the agent also generates its WireGuard identity at
+`/etc/theta42/wg_private.key` (`0600`, root only) and registers the **public**
+half with the Directory, which is what makes the host appear as a device on the
+site gateway. Back that file up with `agent.yml` if you back either up — losing
+it means the device re-enrols under a new key.
 
 ---
 

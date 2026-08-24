@@ -202,6 +202,12 @@ capabilities:
   configure_ldap: true
   ldap_tunnel: true
   service_registration: true
+  # Mesh tunnel: auto-VPN, mesh enrolment, and the signed
+  # wireguard_apply/remove commands. This key used to be omitted entirely,
+  # which left the capability false by accident rather than by choice -- and
+  # since it gates the whole auto-VPN path, the tray's "auto-connect VPN when
+  # away" checkbox silently did nothing on every install.
+  wireguard: true
   reboot: false
   service_control: []
   arbitrary_bash: false

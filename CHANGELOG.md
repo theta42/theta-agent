@@ -1,3 +1,29 @@
+## [v2.11.0] - 2026-08-24
+
+### Added
+- **The agent has a WireGuard identity of its own.** It generates a Curve25519 keypair (RFC 7748 clamping, as `wg genkey` does) on first connect, keeps the private half at `/etc/theta42/wg_private.key` — `0600`, root only; `%ProgramData%\Theta42\wg\private.key` on Windows — and registers only the **public** half with the Directory. Stdlib `crypto/ecdh`, so no new module dependency and nothing to keep in step with the pinned Go version.
+- **Mesh self-enrolment.** `POST /api/v1/agent/mesh/enroll` on every connect, idempotent by agent id, so an installed agent appears as a device in the Directory and on its site gateway with nothing copied by hand — and reconnecting converges on one device row rather than exhausting the site's address pool.
+- **Internet-exit picker in the tray.** A submenu listing every exit the device may use, plus local breakout, ticked to match what the Directory actually holds. Backed by `GET /api/v1/agent/mesh/exits` and `PUT /api/v1/agent/mesh/exit`; the Directory pushes the re-rendered peer config straight back down the WSS channel, so a change takes effect without visiting the web UI. The Directory had computed this set "so the UI and the agent tray render the same set" since the feature shipped — the tray half did not exist until now.
+- `theta-agent config-set` now appears in `--help` and in both shell completions. `discover` was missing from the completions too.
+
+### Fixed
+- **"Auto-connect VPN when away" did nothing — two independent causes, either fatal on its own.**
+  - The whole auto-VPN path is gated on `capabilities.wireguard`, and the installer never wrote that key, so it was false by omission rather than by anyone's decision. The field is now a pointer: **absent means enabled**, so an older `agent.yml` that never mentioned it gains the capability on upgrade, while an explicit `wireguard: false` is still honoured.
+  - "Away" could never happen. `computeIsHome` returned true whenever the home public IP was unknown, and `site_public_ip` — the only thing that set it — appeared exactly once in the entire suite: the line here that *reads* it. Nothing ever sent it, so every agent believed it was permanently at home.
+- **Home detection rewritten around reachability** (`home_reach.go`). The primary signal is a TCP probe of the site's resolver at its **physical** LAN address, which only answers on that LAN; the public-IP comparison is kept as a fallback but is wrong under CGNAT (unrelated sites share an egress address) and at multi-WAN sites. With no signal at all the agent now assumes **away**: a false "home" silently disables auto-VPN, while a false "away" only costs a tunnel.
+- **The tray icon carried a second, identical copy of the broken rule**, so it showed green "Home" forever as well. `isHome` is computed once and passed in — one implementation instead of two that can drift.
+- **A pushed WireGuard config could never come up.** The Directory renders an agent-owned device's config with `PrivateKey = <generated on this device>`, on the stated assumption that the agent "completes it with the key it already holds" — but no agent held one, so the placeholder reached `wg-quick` verbatim. The agent now substitutes its own key, and only touches the key file when the placeholder is actually present, so a fully rendered admin config passes through untouched.
+
+### Documentation
+- `PROTOCOL.md` → **v1.3.0** (additive; no coordinated upgrade needed). `wireguard_apply`, `wireguard_remove`, `desktop_control` and `shutdown` were live signed commands that had **never been documented**. Added those, the private-key placeholder contract (§4.3), desktop control via logind and its Wayland caveat (§4.4), the mesh REST endpoints (§6), and the tray IPC protocol (§7), which had no documentation anywhere.
+- `README.md`: the capability matrix was missing **both** `wireguard` and `service_registration`. New Desktop tray and Mesh membership sections.
+- `INSTALL.md`: merge-not-overwrite on re-install, the systemd user unit for the tray, and a note to back up `wg_private.key` alongside `agent.yml`.
+- `DESIGN-WINDOWS.md` §5 said "Agent side — to build". It is built; the original sketch never said where the client private key came from.
+
+### Tests
+- 30 new tests. `wg_enroll.go` — the code that talks to the Directory — had none; it now has 10 against an `httptest` server, including one asserting the enrolment request **never carries the private key**, which is the promise that lets the Directory say it does not store them.
+- Tray IPC contract tests pinning the wire field names. The tray is a separate binary with its own copy of `TrayStatus`/`TrayCommand`, so a field renamed on one side and not the other fails silently — the JSON simply does not decode.
+
 ## [v2.10.0] - 2026-08-23
 
 ### Added

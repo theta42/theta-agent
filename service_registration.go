@@ -263,7 +263,7 @@ _theta_agent_completions() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     types="systemd docker podman process systemd-timer cron lxc kvm libvirt"
-    cmds="register unregister list-services get-secret get-secrets update reinitialize install-service remove-service configure-login install-completions version help"
+    cmds="register unregister list-services get-secret get-secrets update reinitialize install-service remove-service configure-login config-set discover install-completions version help"
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${cmds}" -- "${cur}") )
         return 0
@@ -306,6 +306,8 @@ _theta_agent() {
         'get-secrets:Fetch all host/resource secrets'
         'update:Self-update binary'
         'reinitialize:Reset enrollment credentials'
+        'config-set:Merge settings into agent.yml'
+        'discover:List theta-suite sites on the local network'
         'version:Show version'
         'help:Show help'
     )

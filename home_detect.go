@@ -21,8 +21,11 @@ var homeState struct {
 	mu            sync.RWMutex
 	agentPublicIP string
 	homePublicIP  string // set by directory config push
+	lanEndpoint   string // LAN-only endpoint pushed by the directory, if any
 	vpnActive     bool
 	autoVPN       bool
+	exits         []TrayExit // exits this device may choose (from the directory)
+	currentExit   *int       // nil = local breakout
 }
 
 // publicIPProviders are tried in order until one succeeds.
@@ -58,6 +61,30 @@ func SetHomePublicIP(ip string) {
 	homeState.mu.Lock()
 	homeState.homePublicIP = ip
 	homeState.mu.Unlock()
+}
+
+// SetHomeLanEndpoint records a host:port that only resolves or routes on the
+// home LAN. Reaching it is the strongest available "I am home" signal.
+func SetHomeLanEndpoint(ep string) {
+	homeState.mu.Lock()
+	homeState.lanEndpoint = ep
+	homeState.mu.Unlock()
+}
+
+// SetMeshExits records the exit choices and the current selection, so the tray
+// can render the picker without talking to the directory itself.
+func SetMeshExits(exits []TrayExit, current *int) {
+	homeState.mu.Lock()
+	homeState.exits = exits
+	homeState.currentExit = current
+	homeState.mu.Unlock()
+}
+
+// MeshExits returns the cached exit choices and current selection.
+func MeshExits() ([]TrayExit, *int) {
+	homeState.mu.RLock()
+	defer homeState.mu.RUnlock()
+	return homeState.exits, homeState.currentExit
 }
 
 // SetVPNActive is called when WireGuard tunnel state changes.
@@ -112,6 +139,7 @@ func checkAndPush(cfg *Config, connectedFn func() bool) {
 	homeState.agentPublicIP = ip
 	agentIP := homeState.agentPublicIP
 	homeIP := homeState.homePublicIP
+	lanEP := homeState.lanEndpoint
 	vpn := homeState.vpnActive
 	autoVPN := homeState.autoVPN
 	homeState.mu.Unlock()
@@ -122,32 +150,22 @@ func checkAndPush(cfg *Config, connectedFn func() bool) {
 		siteName = "home"
 	}
 
+	// Computed once, here, and passed on. UpdateTrayStatus used to derive
+	// "am I home" a second time from its own copy of the rule, so the tray icon
+	// and the auto-VPN decision could disagree -- and both carried the same
+	// `|| homePublicIP == ""` clause that pinned every agent to "home".
+	isHome := detectHome(cfg, agentIP, homeIP, lanEP, connected)
+
 	// WireGuard state + auto-VPN (DESIGN-WINDOWS.md §5). The tunnel can be
 	// driven by the SSO (wireguard_apply/remove) or by the tray; polling keeps
 	// the tray icon blue and lets auto-VPN react to home/away changes.
-	if cfg.Capabilities.WireGuard {
+	if cfg.Capabilities.WireGuardEnabled() {
 		vpn = defaultPlatformOps.WireGuardState()
 		SetVPNActive(vpn)
-		isHome := computeIsHome(agentIP, homeIP, connected, cfg.ServerURL)
 		handleAutoVPN(cfg, isHome, vpn, autoVPN, connected)
 	}
 
-	UpdateTrayStatus(connected, agentIP, homeIP, vpn, autoVPN, siteName, cfg.ServerURL)
-}
-
-// computeIsHome mirrors the home-LAN determination in UpdateTrayStatus: public
-// IP matches the directory's site IP, the server is local/LAN, or the site IP
-// is not yet known (assume local home).
-func computeIsHome(agentPublicIP, homePublicIP string, connected bool, serverURL string) bool {
-	if !connected {
-		return false
-	}
-	isLocalServer := strings.Contains(serverURL, "localhost") ||
-		strings.Contains(serverURL, "127.0.0.1") ||
-		strings.Contains(serverURL, ".local") ||
-		strings.Contains(serverURL, "192.168.") ||
-		strings.Contains(serverURL, "10.")
-	return (homePublicIP != "" && agentPublicIP != "" && agentPublicIP == homePublicIP) || isLocalServer || homePublicIP == ""
+	UpdateTrayStatus(connected, isHome, agentIP, homeIP, vpn, autoVPN, siteName)
 }
 
 // lastAutoVPNChange gates auto-VPN so the home monitor (60s tick) does not

@@ -158,6 +158,14 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		log.Println("Successfully connected to Theta Directory.")
 		wsConnected.Store(true)
 
+		// Register this host's WireGuard public key. Done per-connect rather
+		// than once at boot: the key is stable, the server side is idempotent
+		// by agent id, and doing it here repairs a device row that was deleted
+		// at the far end or was never created because the agent predates mesh
+		// enrolment. Runs in the background so a slow or unreachable REST
+		// endpoint cannot delay the WSS session.
+		go ensureMeshIdentity(cfg)
+
 		stopCh := make(chan struct{})
 
 		// All outbound writes go through the safe writer: gorilla allows only one
@@ -358,11 +366,17 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("ok", "enrollment stored")
 			return
 		}
-		// Extract the home site's public IP if the server pushes it, so the
-		// tray icon can determine whether we are on the home LAN.
+		// Home-detection inputs pushed by the directory. site_public_ip is the
+		// weaker of the two (CGNAT and multi-WAN sites both break the
+		// comparison); site_lan_endpoint is a host:port that only resolves or
+		// routes on the home LAN, so reaching it settles the question.
 		if sitePublicIP, ok := msg.Payload["site_public_ip"].(string); ok && sitePublicIP != "" {
 			SetHomePublicIP(sitePublicIP)
 			log.Printf("[home-detect] home site public IP: %s", sitePublicIP)
+		}
+		if lanEndpoint, ok := msg.Payload["site_lan_endpoint"].(string); ok && lanEndpoint != "" {
+			SetHomeLanEndpoint(lanEndpoint)
+			log.Printf("[home-detect] home LAN endpoint: %s", lanEndpoint)
 		}
 		log.Printf("Received config payload: %v", msg.Payload)
 		sendResponse("ok", "Configuration received")
@@ -591,7 +605,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", "signature verification failed")
 			return
 		}
-		if !cfg.Capabilities.WireGuard {
+		if !cfg.Capabilities.WireGuardEnabled() {
 			log.Println("WireGuard apply rejected: capability disabled in agent.yml")
 			sendResponse("error", "wireguard capability disabled")
 			return
@@ -599,6 +613,17 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		conf, _ := msg.Payload["config"].(string)
 		if conf == "" {
 			sendResponse("error", "missing wireguard config")
+			return
+		}
+		// The Directory renders an agent-owned device's config with a
+		// placeholder where the private key goes -- it has no private key to
+		// put there, by design. Substitute the one this host generated at
+		// enrolment; without this the placeholder reaches wg-quick verbatim and
+		// the interface cannot come up.
+		conf, cerr := fillPrivateKeyFromHost(conf)
+		if cerr != nil {
+			log.Printf("WireGuard apply failed: %v", cerr)
+			sendResponse("error", cerr.Error())
 			return
 		}
 		log.Printf("Applying WireGuard peer config...")
@@ -614,7 +639,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", "signature verification failed")
 			return
 		}
-		if !cfg.Capabilities.WireGuard {
+		if !cfg.Capabilities.WireGuardEnabled() {
 			log.Println("WireGuard remove rejected: capability disabled in agent.yml")
 			sendResponse("error", "wireguard capability disabled")
 			return
