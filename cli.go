@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -49,6 +50,9 @@ func handleCLI(args []string) bool {
 		return true
 	case "list-services":
 		runListServices(args[1:])
+		return true
+	case "config-set":
+		runConfigSet(args[1:])
 		return true
 	case "install-completions":
 		runInstallCompletions(args[1:])
@@ -426,4 +430,51 @@ func fetchAgentSecrets() (map[string]string, error) {
 	}
 
 	return mergedSecrets, nil
+}
+
+// runConfigSet merges `key=value` pairs into agent.yml without disturbing
+// anything else in the file. Used by install.sh so a re-install can update an
+// existing config in place instead of requiring the operator to delete it.
+//
+//	theta-agent config-set server_url=https://sso.example.com location=nyc
+//	theta-agent config-set --path /etc/theta42/agent.yml auto_vpn=true
+func runConfigSet(args []string) {
+	path := defaultConfigPath()
+	pairs := map[string]string{}
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--path" || a == "-c" {
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "config-set: --path needs a value")
+				os.Exit(2)
+			}
+			path = args[i+1]
+			i++
+			continue
+		}
+		k, v, ok := strings.Cut(a, "=")
+		if !ok || k == "" {
+			fmt.Fprintf(os.Stderr, "config-set: expected key=value, got %q\n", a)
+			os.Exit(2)
+		}
+		// An empty value is a legitimate way to blank a field (auth_token=""),
+		// so only the key is required.
+		pairs[k] = v
+	}
+
+	if len(pairs) == 0 {
+		fmt.Fprintln(os.Stderr, "config-set: nothing to set")
+		os.Exit(2)
+	}
+	if err := ApplyConfigValues(path, pairs); err != nil {
+		fmt.Fprintf(os.Stderr, "config-set: %v\n", err)
+		os.Exit(1)
+	}
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Printf("Updated %s (%s)\n", path, strings.Join(keys, ", "))
 }

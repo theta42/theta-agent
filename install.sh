@@ -207,23 +207,33 @@ capabilities:
   arbitrary_bash: false
 EOF
 else
-  log "Preserving existing configuration at $CONFIG_FILE"
+  log "Merging into existing configuration at $CONFIG_FILE"
   # A config that already exists must not be clobbered, but a freshly supplied
   # --url/--token/--join-key/--public-key must not be silently dropped either:
   # re-running the installer with a new join key (or repairing a config that
-  # never had one) is exactly when those flags are used. Update just the lines
-  # the operator actually provided, leaving everything else untouched.
-  if [ -n "$URL" ]; then
-    sed -i "s|^server_url:.*|server_url: \"$URL\"|" "$CONFIG_FILE"
-  fi
-  if [ -n "$TOKEN" ]; then
-    sed -i "s|^auth_token:.*|auth_token: \"$TOKEN\"|" "$CONFIG_FILE"
-  fi
-  if [ -n "$JOIN_KEY" ]; then
-    sed -i "s|^join_key:.*|join_key: \"$JOIN_KEY\"|" "$CONFIG_FILE"
-  fi
-  if [ -n "$PUBLIC_KEY" ]; then
-    sed -i "s|^public_key:.*|public_key: \"$PUBLIC_KEY\"|" "$CONFIG_FILE"
+  # never had one) is exactly when those flags are used.
+  #
+  # This used to be `sed -i "s|^key:.*|key: value|"` per key, which only
+  # substitutes when the key is ALREADY in the file -- so the "repairing a
+  # config that never had one" case silently dropped the value, and operators
+  # had to delete agent.yml before new settings took effect. The agent binary
+  # does the merge now: it appends keys that are missing, leaves comments and
+  # every other setting alone, and validates the result parses before replacing
+  # the file.
+  CONFIG_SET_ARGS=""
+  if [ -n "$URL" ];        then CONFIG_SET_ARGS="$CONFIG_SET_ARGS server_url=$URL"; fi
+  if [ -n "$TOKEN" ];      then CONFIG_SET_ARGS="$CONFIG_SET_ARGS auth_token=$TOKEN"; fi
+  if [ -n "$JOIN_KEY" ];   then CONFIG_SET_ARGS="$CONFIG_SET_ARGS join_key=$JOIN_KEY"; fi
+  if [ -n "$PUBLIC_KEY" ]; then CONFIG_SET_ARGS="$CONFIG_SET_ARGS public_key=$PUBLIC_KEY"; fi
+
+  if [ -n "$CONFIG_SET_ARGS" ]; then
+    # shellcheck disable=SC2086 -- values are shell-word-safe (URLs, hex tokens,
+    # base64 keys, a location slug) and must expand to separate arguments.
+    if ! "$BIN_PATH" config-set --path "$CONFIG_FILE" $CONFIG_SET_ARGS; then
+      error "Failed to merge new settings into $CONFIG_FILE."
+    fi
+  else
+    log "No new settings supplied; leaving $CONFIG_FILE untouched."
   fi
 fi
 # Ensure theta-secrets & theta groups exist for non-root secret access
@@ -260,19 +270,68 @@ log "Attempting to install desktop tray companion ($TRAY_BINARY_NAME)..."
 if curl -fsSL "$TRAY_URL" -o "$TRAY_BIN_PATH.tmp" 2>/dev/null; then
   chmod +x "$TRAY_BIN_PATH.tmp"
   mv -f "$TRAY_BIN_PATH.tmp" "$TRAY_BIN_PATH"
-  mkdir -p /etc/xdg/autostart
-  cat <<EOF > /etc/xdg/autostart/theta-agent-tray.desktop
-[Desktop Entry]
-Type=Application
-Name=Theta Agent Tray
-Comment=Theta Agent Desktop Tray Companion
-Exec=/usr/local/bin/theta-agent-tray
-Icon=network-workgroup
-Terminal=false
-Categories=Utility;System;
-X-GNOME-Autostart-enabled=true
+
+  # A systemd *user* unit rather than an XDG autostart entry. The old
+  # /etc/xdg/autostart/.desktop only fired at the next desktop login, so the
+  # installer left the machine with no tray until the user logged out and back
+  # in -- and over SSH there was no session to fire it at all. A user unit can
+  # be enabled for all future sessions AND started in the sessions running
+  # right now. Remove the old autostart file so the two do not both launch.
+  rm -f /etc/xdg/autostart/theta-agent-tray.desktop
+  mkdir -p /etc/systemd/user
+  cat <<EOF > /etc/systemd/user/theta-agent-tray.service
+[Unit]
+Description=Theta Agent Desktop Tray Companion
+# Only meaningful inside a graphical session; without this the unit would also
+# be started for plain SSH/user managers, where the tray just exits.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$TRAY_BIN_PATH
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
 EOF
-  log "Desktop tray companion installed at $TRAY_BIN_PATH with autostart."
+  systemctl daemon-reload 2>/dev/null || true
+  # Enable for every future user session.
+  systemctl --global enable theta-agent-tray.service >/dev/null 2>&1 || true
+
+  # Start it in the graphical sessions that already exist, so the tray shows up
+  # without a re-login. Ask logind which sessions those are rather than guessing
+  # at DISPLAY -- the user manager already holds the right session environment.
+  started_any=0
+  if command -v loginctl >/dev/null 2>&1; then
+    while read -r _sid _uid _user _rest; do
+      [ -n "${_user:-}" ] || continue
+      _type="$(loginctl show-session "$_sid" --property=Type --value 2>/dev/null || true)"
+      case "$_type" in
+        x11|wayland|mir) ;;
+        *) continue ;;
+      esac
+      # Already running for this user? Leave it alone.
+      if pgrep -u "$_user" -x theta-agent-tray >/dev/null 2>&1; then
+        started_any=1
+        continue
+      fi
+      if systemctl --user --machine="${_user}@.host" daemon-reload >/dev/null 2>&1 &&
+         systemctl --user --machine="${_user}@.host" start theta-agent-tray.service >/dev/null 2>&1; then
+        log "Started tray in ${_user}'s $_type session."
+        started_any=1
+      fi
+    done <<LOGINCTL
+$(loginctl list-sessions --no-legend 2>/dev/null || true)
+LOGINCTL
+  fi
+
+  if [ "$started_any" -eq 1 ]; then
+    log "Desktop tray companion installed at $TRAY_BIN_PATH and running."
+  else
+    log "Desktop tray companion installed at $TRAY_BIN_PATH; it will start at the next desktop login."
+  fi
 fi
 
 # 5. Setup systemd service

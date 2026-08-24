@@ -44,29 +44,169 @@ func (p *linuxPlatformOps) RunScript(script string) ([]byte, error) {
 	return p.exec.Execute("bash", "-c", script)
 }
 
+// desktopSession is one logind session, as reported by `loginctl`.
+type desktopSession struct {
+	ID      string
+	User    string
+	UID     string
+	Type    string // "x11", "wayland", "tty", ...
+	Display string // X11 display (":0"), empty under Wayland
+	Active  bool
+}
+
+// graphical reports whether this session can carry a lock/logout that a user
+// would actually see.
+func (s desktopSession) graphical() bool {
+	return s.Type == "x11" || s.Type == "wayland" || s.Type == "mir"
+}
+
+// listSessions enumerates logind sessions. The daemon runs as root outside any
+// session, so it cannot infer a target from its own environment -- every
+// desktop action has to resolve one explicitly. Returns an empty slice (not an
+// error) when loginctl is missing or there are no sessions, so callers can give
+// a precise "no graphical session" message instead of a raw exec failure.
+func (p *linuxPlatformOps) listSessions(targetUser string) []desktopSession {
+	out, err := p.exec.Execute("loginctl", "list-sessions", "--no-legend")
+	if err != nil {
+		return nil
+	}
+	var sessions []desktopSession
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		id, uid, user := fields[0], fields[1], fields[2]
+		if targetUser != "" && user != targetUser {
+			continue
+		}
+		s := desktopSession{ID: id, UID: uid, User: user}
+		props, perr := p.exec.Execute("loginctl", "show-session", id,
+			"--property=Type", "--property=Active", "--property=Display")
+		if perr == nil {
+			for _, kv := range strings.Split(string(props), "\n") {
+				k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+				if !ok {
+					continue
+				}
+				switch k {
+				case "Type":
+					s.Type = v
+				case "Active":
+					s.Active = v == "yes"
+				case "Display":
+					s.Display = v
+				}
+			}
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// graphicalSessions returns the graphical sessions, active ones first.
+func (p *linuxPlatformOps) graphicalSessions(targetUser string) []desktopSession {
+	var active, idle []desktopSession
+	for _, s := range p.listSessions(targetUser) {
+		if !s.graphical() {
+			continue
+		}
+		if s.Active {
+			active = append(active, s)
+		} else {
+			idle = append(idle, s)
+		}
+	}
+	return append(active, idle...)
+}
+
+// DesktopControl drives lock/logout/display/suspend on the host's desktop
+// sessions.
+//
+// The previous implementation shelled out to `DISPLAY=:0 xset` and
+// `xdg-screensaver`, which cannot work from this daemon: it runs as root under
+// systemd with no session of its own, so it has neither the user's XAUTHORITY
+// (root cannot open another user's X display without it) nor any display at all
+// under Wayland, which is the default on current GNOME and KDE. It also called
+// `loginctl terminate-session` with no session ID -- invalid usage that always
+// failed into a `pkill -f session-child` fallback matching nothing.
+//
+// Everything now goes through logind, which is display-server agnostic: it
+// signals the desktop over D-Bus and works identically on X11 and Wayland.
+// Failures are reported rather than masked, so the Directory shows what
+// actually happened instead of a success for work that never occurred.
 func (p *linuxPlatformOps) DesktopControl(subAction, targetUser string) ([]byte, error) {
 	switch subAction {
 	case "lock_session", "lock":
-		out, err := p.exec.Execute("loginctl", "lock-sessions")
-		if err != nil {
-			return p.exec.Execute("sh", "-c", "DISPLAY=:0 xdg-screensaver lock || DISPLAY=:0 xset dpms force off")
+		sessions := p.graphicalSessions(targetUser)
+		if len(sessions) == 0 {
+			// lock-sessions still reaches sessions loginctl did not enumerate
+			// for us (an unreadable seat, a non-systemd container); try it
+			// before declaring there is nothing to lock.
+			out, err := p.exec.Execute("loginctl", "lock-sessions")
+			if err != nil {
+				return out, fmt.Errorf("no graphical session to lock: %w", err)
+			}
+			return out, nil
 		}
-		return out, nil
+		var b strings.Builder
+		var firstErr error
+		for _, s := range sessions {
+			out, err := p.exec.Execute("loginctl", "lock-session", s.ID)
+			fmt.Fprintf(&b, "session %s (%s, %s): %s\n", s.ID, s.User, s.Type, strings.TrimSpace(string(out)))
+			if err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("lock-session %s: %w", s.ID, err)
+			}
+		}
+		return []byte(b.String()), firstErr
+
 	case "logout_user", "logout":
 		if targetUser != "" {
 			out, err := p.exec.Execute("loginctl", "terminate-user", targetUser)
 			if err != nil {
-				return p.exec.Execute("pkill", "-KILL", "-u", targetUser)
+				return out, fmt.Errorf("terminate-user %s: %w", targetUser, err)
 			}
 			return out, nil
 		}
-		out, err := p.exec.Execute("loginctl", "terminate-session")
-		if err != nil {
-			return p.exec.Execute("pkill", "-9", "-f", "session-child")
+		// No user named: terminate the graphical sessions by ID. The old code
+		// ran `terminate-session` with no argument, which loginctl rejects.
+		sessions := p.graphicalSessions("")
+		if len(sessions) == 0 {
+			return nil, fmt.Errorf("no graphical session to log out")
 		}
-		return out, nil
+		var b strings.Builder
+		var firstErr error
+		for _, s := range sessions {
+			out, err := p.exec.Execute("loginctl", "terminate-session", s.ID)
+			fmt.Fprintf(&b, "session %s (%s): %s\n", s.ID, s.User, strings.TrimSpace(string(out)))
+			if err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("terminate-session %s: %w", s.ID, err)
+			}
+		}
+		return []byte(b.String()), firstErr
+
 	case "display_off":
-		return p.exec.Execute("sh", "-c", "DISPLAY=:0 xset dpms force off || loginctl lock-sessions")
+		// DPMS is an X11 concept. Under Wayland the compositor owns power
+		// management and there is no portable way in -- locking is the closest
+		// honest equivalent, so say so rather than silently doing something else.
+		sessions := p.graphicalSessions(targetUser)
+		for _, s := range sessions {
+			if s.Type != "x11" || s.Display == "" {
+				continue
+			}
+			// Run xset as the session's own user so it can reach that display.
+			out, err := p.exec.Execute("runuser", "-u", s.User, "--",
+				"env", "DISPLAY="+s.Display, "xset", "dpms", "force", "off")
+			if err == nil {
+				return out, nil
+			}
+		}
+		out, err := p.exec.Execute("loginctl", "lock-sessions")
+		if err != nil {
+			return out, fmt.Errorf("no X11 session for DPMS and lock fallback failed: %w", err)
+		}
+		return append([]byte("no X11 session for DPMS (Wayland?); locked instead\n"), out...), nil
+
 	case "sleep_host", "sleep":
 		return p.exec.Execute("systemctl", "suspend")
 	default:

@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubCommandExecutor responds to commands with canned output per command string.
@@ -94,6 +95,13 @@ func TestProbeProcess(t *testing.T) {
 	}
 	if svc.LoadState != "loaded" {
 		t.Fatalf("load state = %q, want loaded", svc.LoadState)
+	}
+	// The test binary is usually less than a second old, so its uptime is a
+	// legitimate 0 and asserting >0 here raced the second boundary (it failed
+	// roughly two runs in three). Wait for the boundary to pass, then re-probe.
+	if svc.UptimeSeconds == 0 {
+		time.Sleep(1100 * time.Millisecond)
+		svc = probeProcess(&stubCommandExecutor{}, itoa(pid))
 	}
 	if svc.UptimeSeconds <= 0 {
 		t.Fatalf("uptime = %d, want >0", svc.UptimeSeconds)

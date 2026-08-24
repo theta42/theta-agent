@@ -57,6 +57,13 @@ type TrayStatus struct {
 	AgentPublicIP  string    `json:"agent_public_ip"` // this agent's detected public IP
 	HomePublicIP   string    `json:"home_public_ip"`  // home site's public IP (from directory)
 	StatusText     string    `json:"status_text"`     // one-line human description
+
+	// ConfigPath is agent.yml's location on this host. The tray needs it
+	// because opening the file has to happen in the *tray's* process: the
+	// daemon is a root systemd service (no DISPLAY, no session bus) and on
+	// Windows a SYSTEM service in session 0, which is isolated from the
+	// interactive desktop -- neither can put a window on screen.
+	ConfigPath string `json:"config_path"`
 }
 
 // TrayCommand is sent from the tray to the daemon.
