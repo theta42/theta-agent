@@ -3,19 +3,22 @@
 _theta_agent() {
     local -a cmds services
     cmds=(
-        'register:Register a service as a child of this host'
-        'unregister:Remove a registered service'
-        'list-services:List registered services'
-        'install-completions:Install shell tab-completion'
-        'get-secret:Fetch a single secret value'
-        'get-secrets:Fetch all host/resource secrets'
-        'update:Self-update binary'
-        'reinitialize:Reset enrollment credentials'
-        'install-service:Register the agent as a Windows service'
-        'remove-service:Unregister the agent Windows service'
-        'configure-login:Wire OpenCredential to the agent LDAP tunnel'
-        'version:Show version'
-        'help:Show help'
+        'register:Register a service on this host into the Directory'
+        'unregister:Remove a registered service from the Directory'
+        'list-services:List the services registered on this host'
+        'get-secret:Fetch one secret value from OpenBao'
+        'get-secrets:Fetch every secret this host may read'
+        'verify:Check that this hosts configuration and keys are usable'
+        'config-set:Merge settings into agent.yml'
+        'reinitialize:Reset enrolment credentials and register again'
+        'discover:List theta-suite sites announced on this network'
+        'update:Self-update this binary from the Directory'
+        'install-completions:Install bash/zsh tab-completion'
+        'install-service:(Windows) register the agent as a service'
+        'remove-service:(Windows) unregister the agent service'
+        'configure-login:(Windows) wire OpenCredential to the LDAP tunnel'
+        'version:Show version information'
+        'help:Show help; help <command> for one command in detail'
     )
 
     if (( CURRENT == 2 )); then

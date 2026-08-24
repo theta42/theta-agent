@@ -256,14 +256,21 @@ func runInstallCompletions(args []string) {
 	}
 
 	// Embedded copies of the completion scripts, installed to the standard
-	// locations. Kept in-sync with the files under completions/.
+	// locations.
+	//
+	// The command lists are substituted from the cli_help.go registry rather
+	// than written out here. There used to be four hand-maintained copies --
+	// these two, and the checked-in files under completions/ -- and they had
+	// already drifted: `config-set` and `discover` were missing from both files
+	// under completions/, so neither ever completed. completions_test.go holds
+	// those files to the same registry.
 	bashScript := `# bash completion for theta-agent
 _theta_agent_completions() {
     local cur services types
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     types="systemd docker podman process systemd-timer cron lxc kvm libvirt"
-    cmds="register unregister list-services get-secret get-secrets update reinitialize install-service remove-service configure-login config-set discover install-completions version help"
+    cmds="__THETA_AGENT_COMMANDS__"
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${cmds}" -- "${cur}") )
         return 0
@@ -298,18 +305,7 @@ complete -F _theta_agent_completions theta-agent
 _theta_agent() {
     local -a cmds services
     cmds=(
-        'register:Register a service as a child of this host'
-        'unregister:Remove a registered service'
-        'list-services:List registered services'
-        'install-completions:Install shell tab-completion'
-        'get-secret:Fetch a single secret value'
-        'get-secrets:Fetch all host/resource secrets'
-        'update:Self-update binary'
-        'reinitialize:Reset enrollment credentials'
-        'config-set:Merge settings into agent.yml'
-        'discover:List theta-suite sites on the local network'
-        'version:Show version'
-        'help:Show help'
+__THETA_AGENT_ZSH_COMMANDS__
     )
     if (( CURRENT == 2 )); then
         _describe 'command' cmds
@@ -348,6 +344,9 @@ _theta_agent "$@"
 		fmt.Fprintf(os.Stderr, "[!] %v\n", err)
 		os.Exit(1)
 	}
+	bashScript = strings.ReplaceAll(bashScript, "__THETA_AGENT_COMMANDS__", completionCommandList())
+	zshScript = strings.ReplaceAll(zshScript, "__THETA_AGENT_ZSH_COMMANDS__", completionZshCommandList())
+
 	if err := os.WriteFile(bashPath, []byte(bashScript), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "[!] Could not write %s: %v\n", bashPath, err)
 		os.Exit(1)

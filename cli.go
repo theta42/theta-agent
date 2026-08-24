@@ -20,6 +20,19 @@ func handleCLI(args []string) bool {
 		return false
 	}
 	arg := strings.ToLower(args[0])
+
+	// `<command> help` / `--help` / `-h` prints that command's documentation
+	// rather than running it. This used to fall through into each command's own
+	// argument parsing, so `theta-agent register help` answered with the usage
+	// error -- one line, no types, no examples. `help` and `version` are
+	// excluded: for them the argument IS the subject.
+	if arg != "help" && arg != "--help" && arg != "-h" && arg != "version" {
+		if c := lookupCommand(arg); c != nil && wantsHelp(args[1:]) {
+			printCommandHelp(c, os.Stdout)
+			return true
+		}
+	}
+
 	switch arg {
 	case "get-secret", "secret-get":
 		runGetSecret(args[1:])
@@ -64,44 +77,17 @@ func handleCLI(args []string) bool {
 		fmt.Println("Theta Agent " + AgentVersion)
 		return true
 	case "--help", "help", "-h":
-		printUsage()
+		runHelp(args[1:])
+		return true
+	case "run":
+		// Named so it can be documented and completed like any other command;
+		// bare `theta-agent` still does the same thing.
+		return false
+	case "verify":
+		runVerify(args[1:])
 		return true
 	}
 	return false
-}
-
-func printUsage() {
-	fmt.Println("Theta Agent - Unified Endpoint Management CLI")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  theta-agent                         Run agent daemon in foreground")
-	fmt.Println("  theta-agent get-secret <key>        Fetch single secret value from OpenBao")
-	fmt.Println("  theta-agent get-secrets [flags]     Fetch all host/resource secrets (flags: --json, --env)")
-	fmt.Println("  theta-agent update                  Self-update binary from Theta Directory")
-	fmt.Println("  theta-agent reinitialize [flags]   Reset enrollment credentials & re-register")
-	fmt.Println("  theta-agent install-service        (Windows) register the agent as a service")
-	fmt.Println("  theta-agent remove-service         (Windows) unregister the agent service")
-	fmt.Println("  theta-agent configure-login        (Windows) wire OpenCredential to the agent's LDAP tunnel")
-	fmt.Println("  theta-agent register <type> <name>    Register a service as a child of this host")
-	fmt.Println("  theta-agent unregister <type> <name>  Remove a registered service from Theta Directory")
-	fmt.Println("  theta-agent list-services             List registered services")
-	fmt.Println("      types: systemd docker podman process systemd-timer cron lxc kvm/libvirt")
-	fmt.Println("  theta-agent config-set <k>=<v>...   Merge settings into agent.yml (top-level keys)")
-	fmt.Println("  theta-agent install-completions     Install bash/zsh tab-completion for this CLI")
-	fmt.Println("  theta-agent discover [flags]        List theta-suite sites announced on the local network")
-	fmt.Println("  theta-agent version                 Show version info")
-	fmt.Println()
-	fmt.Println("Reinitialize Flags:")
-	fmt.Println("  --join-key <key>                    Supply new join key for re-enrollment")
-	fmt.Println()
-	fmt.Println("Config-set Flags:")
-	fmt.Println("  --path <file>                        Config to edit (default /etc/theta42/agent.yml)")
-	fmt.Println()
-	fmt.Println("Discover Flags:")
-	fmt.Println("  --timeout <duration>                 mDNS browse window (default 3s)")
-	fmt.Println("  --urls-only                          Print just \"https://<directoryHost>\", one per line")
-	fmt.Println("  --json                               Print the full announcement list as JSON")
-	fmt.Println()
 }
 
 func runConfigureLogin(args []string) {
