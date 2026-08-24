@@ -1,0 +1,97 @@
+name: ci
+
+# Pull-request and master CI.
+#
+# This exists because the repo had none. `release.yml` triggers on `push: tags`
+# only, so the first time `go test` ever ran against a change was inside the
+# release job -- after the tag was cut. That is not a theoretical gap: v2.11.0
+# shipped with six of thirteen assets because a test asserted a Unix file mode
+# unconditionally and failed on the windows-latest job, which runs `go test`
+# before compiling the installer. Every Windows artifact, setup.exe included,
+# was simply never built, and the only signal was a release that looked fine
+# until someone tried to install it.
+#
+# So the rule this file enforces: whatever the release job would run, run it on
+# the PR first. That means the Windows leg too -- the failure was Windows-only,
+# and a Linux-only check would have been just as green as no check at all.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# A new push supersedes the run in flight for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must track release.yml's GO_VERSION. A check on a different toolchain than
+  # the one that builds the artifacts is not the check anyone thinks it is.
+  GO_VERSION: "1.22.2"
+
+jobs:
+  test:
+    name: test-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Both legs always report: knowing only that "something" failed sends you
+      # to the wrong platform half the time.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      # gofmt is advisory here rather than a gate: the tree has pre-existing
+      # unformatted files, and failing every PR on files it did not touch would
+      # train people to ignore the job.
+      - name: gofmt (advisory)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::notice::gofmt would reformat:"
+            echo "$unformatted"
+          fi
+
+  cross-build:
+    name: cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # The same GOOS/GOARCH set release.yml publishes. A cross-build catches a
+      # platform-gated compile error (build tags, syscall differences) without
+      # waiting for a tag.
+      - name: build every published target
+        run: |
+          set -euo pipefail
+          for target in linux/amd64 linux/arm64 linux/arm windows/amd64 windows/arm64; do
+            goos=${target%%/*}
+            goarch=${target##*/}
+            echo "== $goos/$goarch"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build ./...
+          done
+
+      # Test files are compiled by `go test`, which the release job runs on
+      # windows-latest -- so a test that does not COMPILE for Windows breaks the
+      # release exactly as a failing one does. Building the test binaries here
+      # catches that on Linux, in seconds, without a Windows runner.
+      - name: test binaries compile for windows
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -c -o /dev/null .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -c -o /dev/null ./cmd/theta-agent-tray
