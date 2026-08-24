@@ -15,9 +15,7 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 )
@@ -122,22 +120,17 @@ func (ts *trayServer) handleCommand(cmd TrayCommand) {
 			}
 		}
 	case "open_config":
-		log.Printf("[tray-ipc] opening config %s", defaultConfigPath())
-		openInDefaultViewer(defaultConfigPath())
+		// Kept only for trays older than the ConfigPath field. This process
+		// cannot open a window: on Linux it is a root systemd service with no
+		// DISPLAY or session bus, and on Windows a SYSTEM service in session 0,
+		// which is isolated from the interactive desktop. Current trays open
+		// the file themselves from TrayStatus.ConfigPath.
+		log.Printf("[tray-ipc] open_config from a legacy tray; the daemon cannot "+
+			"open a window from a service context. Config is at %s -- upgrade the "+
+			"tray to open it from the desktop session.", defaultConfigPath())
 	default:
 		log.Printf("[tray-ipc] unknown command: %q", cmd.Command)
 	}
-}
-
-// openInDefaultViewer opens a file/folder with the platform default handler.
-func openInDefaultViewer(path string) {
-	if runtime.GOOS == "windows" {
-		// explorer /select,<path> opens the parent folder with the file
-		// selected. explorer is a GUI app, so no console window appears.
-		_ = exec.Command("explorer", "/select,"+path).Start()
-		return
-	}
-	_ = exec.Command("xdg-open", path).Start()
 }
 
 // Push broadcasts an updated status to all connected tray clients.
@@ -206,6 +199,7 @@ func UpdateTrayStatus(connected bool, agentPublicIP, homePublicIP string, vpnAct
 		AgentPublicIP: agentPublicIP,
 		HomePublicIP:  homePublicIP,
 		StatusText:    statusText,
+		ConfigPath:    defaultConfigPath(),
 	})
 }
 

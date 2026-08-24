@@ -30,6 +30,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -74,6 +75,7 @@ type TrayStatus struct {
 	AgentPublicIP string    `json:"agent_public_ip"`
 	HomePublicIP  string    `json:"home_public_ip"`
 	StatusText    string    `json:"status_text"`
+	ConfigPath    string    `json:"config_path"`
 }
 
 type TrayCommand struct {
@@ -157,7 +159,7 @@ func onReady() {
 				}
 
 			case <-mOpenConfig.ClickedCh:
-				sendCmd(TrayCommand{Command: "open_config"})
+				openConfigLocally()
 
 			case <-mReinit.ClickedCh:
 				sendCmd(TrayCommand{Command: "reinit"})
@@ -167,6 +169,59 @@ func onReady() {
 			}
 		}
 	}()
+}
+
+// openConfigLocally opens agent.yml with the desktop's default handler.
+//
+// This deliberately runs in the tray process rather than asking the daemon to
+// do it. The daemon is a root systemd service on Linux -- no DISPLAY, no
+// session bus, wrong user -- and on Windows a SYSTEM service in session 0,
+// which Windows isolates from the interactive desktop. Launching a viewer from
+// there could never put a window on the user's screen, which is why "Open
+// Config" appeared to do nothing on both platforms. The tray, by contrast, is
+// already running inside the session that owns the display.
+func openConfigLocally() {
+	path := currentStatus.ConfigPath
+	if path == "" {
+		// Older daemon that does not publish the path yet.
+		path = defaultConfigPathForOS()
+	}
+	if _, err := os.Stat(path); err != nil {
+		log.Printf("theta-agent-tray: config not found at %s: %v", path, err)
+		return
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// explorer /select,<path> opens the parent folder with the file
+		// selected. explorer is a GUI app, so no console window appears.
+		cmd = exec.Command("explorer", "/select,"+path)
+	case "darwin":
+		cmd = exec.Command("open", "-R", path)
+	default:
+		cmd = exec.Command("xdg-open", path)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("theta-agent-tray: could not open %s: %v", path, err)
+		return
+	}
+	// Reap the child so it does not linger as a zombie; the viewer itself is
+	// detached and keeps running.
+	go func() { _ = cmd.Wait() }()
+	log.Printf("theta-agent-tray: opened %s", path)
+}
+
+// defaultConfigPathForOS mirrors the daemon's own default, used only when the
+// daemon is too old to send ConfigPath.
+func defaultConfigPathForOS() string {
+	if runtime.GOOS == "windows" {
+		pd := os.Getenv("ProgramData")
+		if pd == "" {
+			pd = `C:\ProgramData`
+		}
+		return filepath.Join(pd, "Theta42", "agent.yml")
+	}
+	return "/etc/theta42/agent.yml"
 }
 
 // connectWithRetry repeatedly tries to connect to the daemon socket, waiting 5s

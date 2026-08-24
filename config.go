@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -455,4 +457,100 @@ func (c *Capabilities) CanManageService(serviceName string) bool {
 		}
 	}
 	return false
+}
+
+// ApplyConfigValues merges key=value pairs into the YAML document at path,
+// leaving every other setting -- comments, capabilities, wireguard block --
+// exactly as the operator left it.
+//
+// install.sh used to do this with `sed -i "s|^key:.*|key: value|"`, which only
+// substitutes when the key is ALREADY present. A config written by an older
+// agent (or hand-trimmed) silently dropped anything new, which is why a
+// re-install appeared to need the old agent.yml deleted before new settings
+// took effect. setYamlScalarValue appends a missing key instead of dropping it.
+func ApplyConfigValues(path string, pairs map[string]string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	doc := string(raw)
+
+	// Deterministic order so a re-run produces an identical file.
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := pairs[k]
+		// Only top-level keys. setYamlScalarValue's pattern also matches an
+		// INDENTED line, and replacing one rewrites it flush-left -- so
+		// `config-set reboot=true` would lift `reboot` out of the capabilities
+		// block, silently dropping the capability while still producing valid
+		// YAML. Refuse rather than mangle the file.
+		if !topLevelKeyRe(k).MatchString(doc) && nestedKeyRe(k).MatchString(doc) {
+			return fmt.Errorf("%q exists only as a nested key; config-set handles "+
+				"top-level keys only -- edit %s by hand for nested settings", k, path)
+		}
+		// Booleans and plain integers must stay unquoted or YAML decodes them
+		// as strings (auto_vpn: "true" is not a bool).
+		quote := true
+		if v == "true" || v == "false" {
+			quote = false
+		} else if _, err := strconv.Atoi(v); err == nil && v != "" {
+			quote = false
+		}
+		doc = setTopLevelYamlScalar(doc, k, v, quote)
+	}
+
+	// Verify the result still parses before replacing the live file -- a
+	// corrupted agent.yml would leave the host unmanageable.
+	var probe map[string]interface{}
+	if err := yaml.Unmarshal([]byte(doc), &probe); err != nil {
+		return fmt.Errorf("refusing to write %s: result is not valid YAML: %w", path, err)
+	}
+
+	// Preserve the existing mode (0640, root:theta-secrets) rather than
+	// inventing one.
+	mode := os.FileMode(0640)
+	if fi, serr := os.Stat(path); serr == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(doc), mode); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	return nil
+}
+
+// topLevelKeyRe matches `key:` only at column zero.
+func topLevelKeyRe(key string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `[ \t]*:.*$`)
+}
+
+// nestedKeyRe matches `key:` only when indented under a parent.
+func nestedKeyRe(key string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^[ \t]+` + regexp.QuoteMeta(key) + `[ \t]*:.*$`)
+}
+
+// setTopLevelYamlScalar is setYamlScalarValue restricted to column zero, so it
+// can never reach inside a nested block. Appends the key when absent.
+func setTopLevelYamlScalar(doc, key, value string, quote bool) string {
+	line := fmt.Sprintf("%s: %s", key, value)
+	if quote {
+		line = fmt.Sprintf("%s: %q", key, value)
+	}
+	re := topLevelKeyRe(key)
+	if re.MatchString(doc) {
+		return re.ReplaceAllString(doc, line)
+	}
+	if !strings.HasSuffix(doc, "\n") {
+		doc += "\n"
+	}
+	return doc + line + "\n"
 }

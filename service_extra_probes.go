@@ -167,7 +167,11 @@ func processUptime(exec Executor, pid string) int64 {
 	}
 	startUnix := boot + int64(startTicks/hz)
 	now := time.Now().Unix()
-	if startUnix > 0 && now > startUnix {
+	// `now >= startUnix`, not `>`: a process younger than one second has a
+	// truthful uptime of 0, and the old strict comparison fell through to the
+	// same `return 0` used for "could not determine" -- so a service that had
+	// just restarted was indistinguishable from one we failed to probe.
+	if startUnix > 0 && now >= startUnix {
 		return now - startUnix
 	}
 	return 0

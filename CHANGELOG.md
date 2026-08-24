@@ -1,3 +1,19 @@
+## [v2.10.0] - 2026-08-23
+
+### Added
+- **`theta-agent config-set key=value ...`** merges values into `agent.yml` in place: it replaces keys that exist, appends keys that do not, preserves comments and nested blocks, and validates the result parses before replacing the file. It refuses a key that exists only nested (e.g. `reboot` under `capabilities`) rather than lifting it flush-left, which would silently drop the capability while still producing valid YAML.
+
+### Fixed
+- **Re-installing no longer requires deleting `agent.yml` first.** `install.sh` merged new settings with `sed -i "s|^key:.*|key: value|"` per key, which only substitutes a key that is **already present**. A config that never had `join_key`/`public_key` silently dropped them — the exact "repairing a config that never had one" case the code claimed to handle. The installer now shells out to `config-set`, which appends what is missing.
+- **"Open Config" did nothing on Linux and Windows.** The tray sent an `open_config` IPC command and the *daemon* ran `xdg-open`/`explorer` — but the daemon is a root systemd service with no `DISPLAY` or session bus on Linux, and a SYSTEM service in **session 0** on Windows, which is isolated from the interactive desktop. Neither can put a window on screen. The tray now opens the file itself from the new `TrayStatus.ConfigPath`, running inside the session that owns the display. The daemon's handler remains only to log a clear message for older tray binaries, and its errors are no longer discarded.
+- **The Linux installer left the machine with no tray until the next login.** It wrote only `/etc/xdg/autostart/theta-agent-tray.desktop`, which fires at desktop login — and over SSH there is no session to fire it at all. Replaced with a systemd **user** unit: `systemctl --global enable` for future sessions, plus starting it in the graphical sessions that already exist. Sessions come from `loginctl` rather than a guess at `DISPLAY`, users who already have a tray are skipped, and the old autostart file is removed so the two cannot both launch.
+- **Desktop Session & Power Controls did nothing on Linux.** `DesktopControl` shelled out to `DISPLAY=:0 xset` and `xdg-screensaver`, which cannot work from this daemon: as root it has neither the user's `XAUTHORITY` nor any display at all under Wayland, the default on current GNOME and KDE. It also called `loginctl terminate-session` **with no session ID** — invalid usage that always failed into a `pkill -f session-child` fallback matching nothing. Everything now goes through logind, which is display-server agnostic: lock and logout resolve real session IDs and act on each, `display_off` runs `xset` as the session's own user against that session's real display and says so when it locks instead under Wayland, and failures are reported rather than masked — so the Directory stops showing success for work that never happened.
+- **A just-restarted service reported an unknown uptime.** `processUptime` returned `now - startUnix` only when `now > startUnix`, so a process younger than one second fell through to the same `return 0` used for "could not determine". Now `>=`. This also fixed `TestProbeProcess`, which raced the second boundary and failed roughly two runs in three.
+- **meta: `AgentVersion` now matches the release tag.** The constant still read `v2.8.1` at tag `v2.9.1`, so every agent under-reported its version in telemetry and in the Directory's host list. Now `v2.10.0`.
+
+### Tests
+- 15 new tests where there were none: 7 for `DesktopControl` (asserting it does *not* reach for `xset`/`DISPLAY=:0` under Wayland and does not fall back to `pkill`) and 8 for the config merge (missing-key append, comment/nesting preservation, unquoted booleans, nested-key refusal).
+
 ## [v2.9.1] - 2026-08-23
 
 ### Added
