@@ -14,12 +14,31 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// meshHTTPError carries the status alongside the message so callers can tell
+// "this Directory does not have the endpoint" (stop) from "not authenticated
+// yet" or "briefly unreachable" (retry).
+type meshHTTPError struct {
+	status int
+	msg    string
+}
+
+func (e *meshHTTPError) Error() string {
+	return fmt.Sprintf("mesh enrol failed (%d): %s", e.status, e.msg)
+}
+
+// notSupported reports whether the Directory answered in a way that says the
+// mesh endpoint is not there at all, rather than that this attempt was wrong.
+func (e *meshHTTPError) notSupported() bool {
+	return e.status == http.StatusNotFound || e.status == http.StatusNotImplemented
+}
 
 // MeshDevice is what the Directory hands back once this host has a mesh
 // identity: the address it allocated and the exit it is currently routed
@@ -73,7 +92,7 @@ func enrollMeshIdentity(cfg *Config, pubKey string) (*MeshDevice, error) {
 		if e.Message == "" {
 			e.Message = resp.Status
 		}
-		return nil, fmt.Errorf("mesh enrol failed (%s): %s", resp.Status, e.Message)
+		return nil, &meshHTTPError{status: resp.StatusCode, msg: e.Message}
 	}
 
 	var out struct {
@@ -89,30 +108,75 @@ func enrollMeshIdentity(cfg *Config, pubKey string) (*MeshDevice, error) {
 	return &out.Client, nil
 }
 
-// ensureMeshIdentity loads (or creates) this host's key and enrols it. Called
-// once the agent is connected and authenticated. Best-effort: a Directory that
-// does not support mesh enrolment, or is briefly unreachable, must not stop the
-// agent doing everything else.
-func ensureMeshIdentity(cfg *Config) {
-	if !cfg.Capabilities.WireGuardEnabled() {
+// meshEnrolRetryDelay/meshEnrolMaxAttempts bound the retry loop below. The
+// common failure it exists for -- enrolling before the agent has swapped its
+// join key for a real auth token -- clears within a second or two, so the
+// delay is short and the ceiling is generous rather than the other way round.
+var (
+	meshEnrolRetryDelay  = 15 * time.Second
+	meshEnrolMaxAttempts = 20
+)
+
+// ensureMeshIdentity loads (or creates) this host's key and enrols it, retrying
+// until the Directory accepts it or the attempt ceiling is reached.
+//
+// It takes the ConfigManager rather than a *Config on purpose. The first
+// version took a snapshot captured when the WebSocket dialled -- but a
+// self-enrolling agent dials with its JOIN KEY, and only receives its real
+// auth token moments later, over that same connection. /api/v1/agent/mesh/enroll
+// authenticates agents by their issued token and rejects a join key outright,
+// so the one and only attempt 401'd, roughly a second before the credential
+// that would have worked was written to agent.yml. With enrolment fired only on
+// connect, and the connection then staying up for days, the device never
+// enrolled at all: no mesh row, nothing in jump-host's device list, no config
+// to push. Re-reading the config each attempt is what makes the retry useful --
+// retrying a stale snapshot would just resend the join key.
+//
+// Best-effort throughout: a Directory that does not support mesh enrolment, or
+// is briefly unreachable, must not stop the agent doing everything else.
+func ensureMeshIdentity(cm *ConfigManager) {
+	if !cm.Get().Capabilities.WireGuardEnabled() {
 		return
 	}
-	kp, err := LoadOrCreateWireGuardKey("")
+	kp, err := LoadOrCreateWireGuardKey(wgKeyPathOverride)
 	if err != nil {
 		log.Printf("[mesh] could not establish a WireGuard identity: %v", err)
 		return
 	}
 	SetWireGuardPublicKey(kp.PublicKey)
 
-	device, err := enrollMeshIdentity(cfg, kp.PublicKey)
-	if err != nil {
-		log.Printf("[mesh] could not enrol with the directory: %v", err)
-		return
-	}
-	log.Printf("[mesh] enrolled as %q at %s (site %d)", device.Name, device.AssignedIP, device.SiteID)
+	for attempt := 1; attempt <= meshEnrolMaxAttempts; attempt++ {
+		cfg := cm.Get()
 
-	// The device row now exists, so the exit list is answerable.
-	refreshMeshExits(cfg)
+		// A join key can authenticate the WebSocket (that is how a host
+		// self-enrols) but not the agent REST API. Waiting is not a failure --
+		// the token is on its way over the socket we are already on.
+		if cfg.AuthToken == "" {
+			if attempt == 1 {
+				log.Printf("[mesh] waiting for this agent's auth token before enrolling its WireGuard key")
+			}
+			time.Sleep(meshEnrolRetryDelay)
+			continue
+		}
+
+		device, err := enrollMeshIdentity(cfg, kp.PublicKey)
+		if err == nil {
+			log.Printf("[mesh] enrolled as %q at %s (site %d)", device.Name, device.AssignedIP, device.SiteID)
+			// The device row now exists, so the exit list is answerable.
+			refreshMeshExits(cfg)
+			return
+		}
+		// A Directory that simply does not have the endpoint will never have
+		// it; retrying twenty times per reconnect only fills its logs and ours.
+		var he *meshHTTPError
+		if errors.As(err, &he) && he.notSupported() {
+			log.Printf("[mesh] this directory does not support mesh enrolment (%v); skipping", err)
+			return
+		}
+		log.Printf("[mesh] could not enrol with the directory (attempt %d/%d): %v", attempt, meshEnrolMaxAttempts, err)
+		time.Sleep(meshEnrolRetryDelay)
+	}
+	log.Printf("[mesh] giving up on enrolment for now; will try again on the next reconnect")
 }
 
 // ── Exit selection ──────────────────────────────────────────────────────────

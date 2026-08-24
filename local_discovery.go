@@ -52,11 +52,35 @@ func StartLocalDiscovery(cm *ConfigManager) {
 	}
 
 	log.Printf("[local-discovery] enabled, watching for a local announcement fronting %s", targetHost)
+
+	// Start from the machine's real DNS truth. A managed block left behind by a
+	// previous run is our own state, not the operator's, and we have no reason
+	// yet to believe it is still correct -- the address may have moved, the
+	// certificate may have changed, or (the case that produced this) a previous
+	// version may have written a block that breaks TLS for the whole host.
+	//
+	// Clearing it also un-fools the "already resolves to the discovered IP, no
+	// override needed" shortcut below, which reads /etc/hosts through the
+	// resolver: with a stale block still in place that check compares our own
+	// previous answer against itself, concludes there is nothing to do, and
+	// leaves the block there permanently.
+	if err := applyHostsOverride(map[string]string{}); err != nil {
+		log.Printf("[local-discovery] could not clear a previous hosts override: %v", err)
+	}
+
 	currentlyOverridden := false
 	lastIP := ""
 
 	for {
 		ip := findLocalAnnouncement(targetHost)
+
+		// Record the sighting for home detection before deciding anything about
+		// the hosts file. mDNS is link-local by construction -- multicast does
+		// not cross routers or VLANs -- so "this site answered" is direct proof
+		// of being on that site's LAN, and it holds whether or not an override
+		// ends up being applied or is even wanted. home_reach.go consumes it.
+		setLocalSiteSeen(ip != "")
+
 		switch {
 		case ip != "" && !currentlyOverridden:
 			// Only apply an override if the discovered IP actually differs from
@@ -67,6 +91,13 @@ func StartLocalDiscovery(cm *ConfigManager) {
 			// existing /etc/hosts entry that may be intentionally managed.
 			if currentIP := resolveHost(targetHost); currentIP == ip {
 				log.Printf("[local-discovery] %s already resolves to %s -- no hosts override needed", targetHost, ip)
+			} else if !overrideIsSafe(cfg.ServerURL, targetHost, ip) {
+				// The LAN address is reachable but does not serve a usable
+				// certificate for this name, so committing the override would
+				// break TLS for every client on this machine, not just the
+				// agent (/etc/hosts is system-wide). The public path already
+				// works; leave it alone. See discovery_verify.go.
+				log.Printf("[local-discovery] NOT overriding %s -> %s: it would break TLS for this whole host; leaving normal resolution in place", targetHost, ip)
 			} else if err := applyHostsOverride(map[string]string{targetHost: ip}); err != nil {
 				log.Printf("[local-discovery] found %s locally at %s but failed to apply hosts override: %v", targetHost, ip, err)
 			} else {
@@ -82,21 +113,44 @@ func StartLocalDiscovery(cm *ConfigManager) {
 				currentlyOverridden = true
 				notifyDiscoveryChange()
 			}
-		case ip == "" && currentlyOverridden:
-			if err := applyHostsOverride(map[string]string{}); err != nil {
-				log.Printf("[local-discovery] lost local announcement for %s but failed to clear hosts override: %v", targetHost, err)
-			} else {
-				if lastIP != "" {
-					removeLocalRoute(lastIP)
-				}
-				log.Printf("[local-discovery] %s no longer announced locally -- reverting to normal resolution", targetHost)
-				currentlyOverridden = false
-				lastIP = ""
-				notifyDiscoveryChange()
+
+		case ip != "" && currentlyOverridden:
+			// Still announced, but keep checking that the address we pinned is
+			// still serving a good certificate. A cert can expire, be rotated,
+			// or the announcing address can move to a host that has none --
+			// and an override left in place after that breaks the whole machine
+			// rather than degrading quietly.
+			if ip != lastIP {
+				log.Printf("[local-discovery] %s now announced at %s (was %s) -- re-evaluating", targetHost, ip, lastIP)
+				revertOverride(targetHost, &lastIP, &currentlyOverridden)
+			} else if !overrideIsSafe(cfg.ServerURL, targetHost, ip) {
+				log.Printf("[local-discovery] %s at %s stopped serving a usable certificate -- reverting to normal resolution", targetHost, ip)
+				revertOverride(targetHost, &lastIP, &currentlyOverridden)
 			}
+
+		case ip == "" && currentlyOverridden:
+			log.Printf("[local-discovery] %s no longer announced locally -- reverting to normal resolution", targetHost)
+			revertOverride(targetHost, &lastIP, &currentlyOverridden)
 		}
 		time.Sleep(mdnsPollInterval)
 	}
+}
+
+// revertOverride removes the managed hosts block and the pinned host route,
+// returning the machine to ordinary DNS resolution. Shared by every path that
+// gives up an override (announcement lost, address moved, certificate no
+// longer usable) so none of them can forget half of the teardown.
+func revertOverride(targetHost string, lastIP *string, overridden *bool) {
+	if err := applyHostsOverride(map[string]string{}); err != nil {
+		log.Printf("[local-discovery] failed to clear the hosts override for %s: %v", targetHost, err)
+		return
+	}
+	if *lastIP != "" {
+		removeLocalRoute(*lastIP)
+	}
+	*lastIP = ""
+	*overridden = false
+	notifyDiscoveryChange()
 }
 
 // discoveryChangedCh is signaled (non-blocking) whenever a local-discovery

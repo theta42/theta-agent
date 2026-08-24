@@ -5,8 +5,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func testConfig(serverURL string) *Config {
@@ -214,9 +217,159 @@ func TestEnsureMeshIdentitySkippedWhenCapabilityOff(t *testing.T) {
 
 	off := false
 	cfg := &Config{ServerURL: srv.URL, AuthToken: "t", Capabilities: Capabilities{WireGuard: &off}}
-	ensureMeshIdentity(cfg)
+	ensureMeshIdentity(&ConfigManager{current: cfg})
 	refreshMeshExits(cfg)
 	if called {
 		t.Fatalf("mesh endpoints were called with the wireguard capability off")
+	}
+}
+
+// A self-enrolling host dials the WebSocket with its join key and is handed a
+// real auth token a moment later. Enrolment must not burn its single attempt
+// on the join key: the REST endpoint rejects it, and the shipped version then
+// never tried again for the life of the connection, leaving the device with no
+// mesh row at all.
+func TestEnsureMeshIdentityWaitsForAuthTokenThenEnrols(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wgKeyPathOverride = filepath.Join(t.TempDir(), "wg.key")
+	defer func() { wgKeyPathOverride = "" }()
+
+	var mu sync.Mutex
+	var seenTokens []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenTokens = append(seenTokens, r.Header.Get("Authorization"))
+		mu.Unlock()
+		if r.URL.Path == "/api/v1/agent/mesh/enroll" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"client":{"id":"d1","name":"host","assignedIp":"10.1.0.9","siteId":1}}`))
+			return
+		}
+		w.Write([]byte(`{"exits":[],"current":null}`))
+	}))
+	defer srv.Close()
+
+	// Start with only a join key, exactly as a fresh host does.
+	cm := &ConfigManager{current: &Config{ServerURL: srv.URL, JoinKey: "join-key"}}
+
+	prevDelay := meshEnrolRetryDelay
+	meshEnrolRetryDelay = 5 * time.Millisecond
+	defer func() { meshEnrolRetryDelay = prevDelay }()
+
+	done := make(chan struct{})
+	go func() { ensureMeshIdentity(cm); close(done) }()
+
+	// The token arrives over the WebSocket shortly after the dial.
+	time.Sleep(20 * time.Millisecond)
+	cm.mu.Lock()
+	cm.current = &Config{ServerURL: srv.URL, JoinKey: "join-key", AuthToken: "real-token"}
+	cm.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ensureMeshIdentity never completed after the auth token appeared")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenTokens) == 0 {
+		t.Fatal("never reached the directory at all")
+	}
+	for _, tok := range seenTokens {
+		if strings.Contains(tok, "join-key") {
+			t.Fatalf("enrolled with the join key, which the REST API rejects: %q", tok)
+		}
+	}
+}
+
+// The retry must re-read the config rather than a snapshot: retrying a
+// captured join key would resend the credential that cannot work.
+func TestEnsureMeshIdentityGivesUpWithoutAToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wgKeyPathOverride = filepath.Join(t.TempDir(), "wg.key")
+	defer func() { wgKeyPathOverride = "" }()
+
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	prevDelay, prevMax := meshEnrolRetryDelay, meshEnrolMaxAttempts
+	meshEnrolRetryDelay, meshEnrolMaxAttempts = time.Millisecond, 3
+	defer func() { meshEnrolRetryDelay, meshEnrolMaxAttempts = prevDelay, prevMax }()
+
+	ensureMeshIdentity(&ConfigManager{current: &Config{ServerURL: srv.URL, JoinKey: "join-key"}})
+	if called {
+		t.Fatal("contacted the mesh REST API with only a join key")
+	}
+}
+
+// A Directory without the endpoint will never grow one mid-connection.
+// Retrying it twenty times per reconnect just fills both logs.
+func TestEnsureMeshIdentityStopsWhenTheDirectoryHasNoMeshEndpoint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wgKeyPathOverride = filepath.Join(t.TempDir(), "wg.key")
+	defer func() { wgKeyPathOverride = "" }()
+
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Page not found"}`))
+	}))
+	defer srv.Close()
+
+	prevDelay, prevMax := meshEnrolRetryDelay, meshEnrolMaxAttempts
+	meshEnrolRetryDelay, meshEnrolMaxAttempts = time.Millisecond, 10
+	defer func() { meshEnrolRetryDelay, meshEnrolMaxAttempts = prevDelay, prevMax }()
+
+	ensureMeshIdentity(&ConfigManager{current: &Config{ServerURL: srv.URL, AuthToken: "tok"}})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("kept retrying an endpoint that does not exist: %d attempts", attempts)
+	}
+}
+
+// ...but an ordinary rejection is worth retrying: the credential may be about
+// to change, or the far end may be briefly unhappy.
+func TestEnsureMeshIdentityRetriesATransientRejection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wgKeyPathOverride = filepath.Join(t.TempDir(), "wg.key")
+	defer func() { wgKeyPathOverride = "" }()
+
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < 3 {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"message":"unauthorized"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"client":{"id":"d1","name":"host","assignedIp":"10.1.0.9","siteId":1}}`))
+	}))
+	defer srv.Close()
+
+	prevDelay, prevMax := meshEnrolRetryDelay, meshEnrolMaxAttempts
+	meshEnrolRetryDelay, meshEnrolMaxAttempts = time.Millisecond, 10
+	defer func() { meshEnrolRetryDelay, meshEnrolMaxAttempts = prevDelay, prevMax }()
+
+	ensureMeshIdentity(&ConfigManager{current: &Config{ServerURL: srv.URL, AuthToken: "tok"}})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts < 3 {
+		t.Fatalf("gave up before the far end recovered: %d attempts", attempts)
 	}
 }

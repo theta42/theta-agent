@@ -164,7 +164,12 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// at the far end or was never created because the agent predates mesh
 		// enrolment. Runs in the background so a slow or unreachable REST
 		// endpoint cannot delay the WSS session.
-		go ensureMeshIdentity(cfg)
+		//
+		// It gets the ConfigManager, not the snapshot above: a self-enrolling
+		// host dials with its join key and is issued its real auth token over
+		// this very connection a moment later, and the REST endpoint only
+		// accepts the latter. See ensureMeshIdentity.
+		go ensureMeshIdentity(cm)
 
 		stopCh := make(chan struct{})
 
