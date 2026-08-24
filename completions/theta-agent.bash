@@ -4,7 +4,7 @@ _theta_agent_completions() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    cmds="register unregister list-services install-completions get-secret get-secrets update reinitialize install-service remove-service configure-login version help"
+    cmds="register unregister list-services get-secret get-secrets verify config-set reinitialize discover update install-completions install-service remove-service configure-login version help"
     types="systemd docker podman process systemd-timer cron lxc kvm libvirt"
 
     if [[ $COMP_CWORD -eq 1 ]]; then

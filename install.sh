@@ -57,6 +57,8 @@ JOIN_KEY=""
 PUBLIC_KEY=""
 B64_CONFIG=""
 INSTALL_SSSD=0
+# auto | yes | no -- whether to install the desktop tray companion.
+INSTALL_TRAY="auto"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -85,6 +87,16 @@ while [ $# -gt 0 ]; do
       ;;
     --install-sssd|--ldap)
       INSTALL_SSSD=1
+      shift
+      ;;
+    # The tray is only useful where somebody can see it. Detection is automatic
+    # (see host_is_desktop below); these override it either way.
+    --tray)
+      INSTALL_TRAY="yes"
+      shift
+      ;;
+    --no-tray|--headless)
+      INSTALL_TRAY="no"
       shift
       ;;
     *)
@@ -152,6 +164,39 @@ case "$OS_NAME" in
 esac
 
 BINARY_URL="https://github.com/theta42/theta-agent/releases/latest/download/${BINARY_NAME}"
+
+# 2b. Stop an agent that is already running before touching its binary.
+#
+# Re-running the installer on a managed host is the normal way to re-point or
+# re-key it, and this step was missing: the new binary was moved over the old
+# one while the old one was still executing. On Linux that leaves the RUNNING
+# process on the previous inode, so the host keeps running the old agent until
+# something restarts it -- an upgrade that reports success and changes nothing.
+# The tray, which is a per-user unit, was never touched at all and kept talking
+# to a socket the restarted daemon had replaced.
+#
+# Recorded, not assumed: a host where the agent was deliberately stopped should
+# not be started by an upgrade.
+AGENT_WAS_RUNNING=0
+AGENT_WAS_INSTALLED=0
+if command -v systemctl >/dev/null 2>&1; then
+  if [ -f "$SERVICE_FILE" ]; then
+    AGENT_WAS_INSTALLED=1
+    if systemctl is-active --quiet theta-agent 2>/dev/null; then
+      AGENT_WAS_RUNNING=1
+      log "An agent is already running -- stopping theta-agent before upgrading it."
+      systemctl stop theta-agent || error "Could not stop the running theta-agent service; refusing to replace a binary that is still in use."
+    else
+      log "theta-agent is installed but not running -- upgrading in place."
+    fi
+  fi
+
+  # Per-user tray units. They talk to the daemon over its IPC socket, so a tray
+  # left running across an upgrade holds a stale connection.
+  for _u in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+    systemctl --user --machine="${_u}@.host" stop theta-agent-tray.service >/dev/null 2>&1 || true
+  done
+fi
 
 # 3. Install binary
 log "Detected OS: $OS_NAME ($ARCH_NAME) -> Downloading binary $BINARY_NAME..."
@@ -242,6 +287,20 @@ else
     log "No new settings supplied; leaving $CONFIG_FILE untouched."
   fi
 fi
+# 4b. Check the configuration is actually usable before installing a service
+# around it.
+#
+# A config carrying a public_key that does not decode, or no credential at all,
+# produces an agent that starts, connects, and then rejects every signed command
+# the Directory sends -- visible only in the journal, on a host the operator was
+# just told had installed successfully. `theta-agent verify` exits non-zero when
+# something will stop the agent working, so the installer can say so here
+# instead.
+log "Verifying configuration and keys..."
+if ! "$BIN_PATH" verify --path "$CONFIG_FILE"; then
+  error "The configuration at $CONFIG_FILE will not work (see above). Fix it, or re-run with --url/--token/--join-key/--public-key to replace the bad values."
+fi
+
 # Ensure theta-secrets & theta groups exist for non-root secret access
 log "Configuring non-root secret access groups (theta-secrets)..."
 if command -v groupadd >/dev/null 2>&1; then
@@ -272,8 +331,87 @@ esac
 TRAY_BIN_PATH="/usr/local/bin/theta-agent-tray"
 TRAY_URL="https://github.com/theta42/theta-agent/releases/latest/download/${TRAY_BINARY_NAME}"
 
-log "Attempting to install desktop tray companion ($TRAY_BINARY_NAME)..."
-if curl -fsSL "$TRAY_URL" -o "$TRAY_BIN_PATH.tmp" 2>/dev/null; then
+# host_is_desktop reports whether this machine has a graphical environment a
+# tray icon could appear in.
+#
+# The installer used to download the tray and install a user unit on every host,
+# headless servers included -- so a rack machine got a systray binary, a
+# graphical-session.target unit that can never activate, and a line in the
+# install log promising it "will start at the next desktop login" that was never
+# going to happen.
+#
+# No single signal is reliable on its own: a desktop can be mid-boot with no
+# session yet, and a machine being provisioned over SSH has no session for the
+# installer to look at. So several are consulted and any one is sufficient.
+#
+# `systemctl get-default` is deliberately NOT one of them. It looks like the
+# authoritative answer and is not: measured on two headless theta-suite servers,
+# both reported graphical.target as their default while having no display
+# manager, no /usr/share/xsessions entries, no wayland sessions and no X socket.
+# Plenty of server images ship that default. Using it would call every one of
+# those hosts a desktop, which is the bug being fixed.
+host_is_desktop() {
+  # 1. A logind session that is graphical RIGHT NOW. Conclusive when it fires.
+  #    Type matters: a headless server being provisioned over SSH also has
+  #    sessions, they are just tty ones.
+  if command -v loginctl >/dev/null 2>&1; then
+    for _sid in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+      case "$(loginctl show-session "$_sid" -p Type --value 2>/dev/null)" in
+        x11|wayland|mir) DESKTOP_REASON="a graphical session is running"; return 0 ;;
+      esac
+    done
+  fi
+
+  # 2. An enabled display manager: a GUI is meant to run here, even if nobody
+  #    is logged into it at the moment.
+  if command -v systemctl >/dev/null 2>&1; then
+    for _dm in gdm gdm3 sddm lightdm xdm lxdm slim greetd ly cosmic-greeter; do
+      if systemctl is-enabled --quiet "${_dm}.service" 2>/dev/null; then
+        DESKTOP_REASON="display manager ${_dm} is enabled"
+        return 0
+      fi
+    done
+  fi
+
+  # 3. Installed session definitions -- a desktop environment is present to be
+  #    logged into, whatever manages the login.
+  for _d in /usr/share/xsessions /usr/share/wayland-sessions; do
+    if [ -d "$_d" ] && [ -n "$(ls -A "$_d" 2>/dev/null)" ]; then
+      DESKTOP_REASON="desktop sessions are installed in $_d"
+      return 0
+    fi
+  done
+
+  # 4. A live X display socket. Catches a running X server that logind does not
+  #    know about (a bare startx, an X session outside a seat).
+  if [ -n "$(ls -A /tmp/.X11-unix 2>/dev/null)" ]; then
+    DESKTOP_REASON="an X display socket is present"
+    return 0
+  fi
+
+  return 1
+}
+
+DESKTOP_REASON=""
+INSTALL_TRAY_DECIDED="$INSTALL_TRAY"
+if [ "$INSTALL_TRAY" = "auto" ]; then
+  if host_is_desktop; then
+    INSTALL_TRAY_DECIDED="yes"
+    log "This host looks like a desktop ($DESKTOP_REASON) -- installing the tray companion."
+  else
+    INSTALL_TRAY_DECIDED="no"
+    log "No graphical environment detected -- skipping the desktop tray companion."
+    log "Install it anyway with: --tray"
+  fi
+fi
+
+# Guard first so the tray binary is not even downloaded on a headless host.
+# Written as a no-op branch rather than by wrapping everything below, which
+# would re-indent the whole block for no benefit.
+if [ "$INSTALL_TRAY_DECIDED" != "yes" ]; then
+  :
+elif curl -fsSL "$TRAY_URL" -o "$TRAY_BIN_PATH.tmp" 2>/dev/null; then
+  log "Installing desktop tray companion ($TRAY_BINARY_NAME)..."
   chmod +x "$TRAY_BIN_PATH.tmp"
   mv -f "$TRAY_BIN_PATH.tmp" "$TRAY_BIN_PATH"
 
@@ -338,10 +476,31 @@ LOGINCTL
   else
     log "Desktop tray companion installed at $TRAY_BIN_PATH; it will start at the next desktop login."
   fi
+else
+  # Only reachable when the tray was wanted and the download failed. Not fatal
+  # -- the agent itself is installed and working -- but it used to pass in
+  # silence, which is how a desktop ended up with no tray and no explanation.
+  log "Could not download the tray companion from $TRAY_URL -- the agent is installed without it."
 fi
 
 # 5. Setup systemd service
 log "Creating systemd service unit..."
+# Man page. Generated by the binary itself from the same command registry that
+# backs `theta-agent help`, so `man theta-agent` cannot describe a different CLI
+# than the one installed.
+if command -v mandb >/dev/null 2>&1 || [ -d /usr/share/man ]; then
+  MAN_DIR="/usr/share/man/man8"
+  if mkdir -p "$MAN_DIR" 2>/dev/null && "$BIN_PATH" help --man > "$MAN_DIR/theta-agent.8" 2>/dev/null; then
+    chmod 644 "$MAN_DIR/theta-agent.8"
+    # Best-effort: an out-of-date index only costs `man -k`, and mandb is slow
+    # enough that failing the install over it would be the wrong trade.
+    mandb -q >/dev/null 2>&1 || true
+    log "Installed man page: man theta-agent"
+  else
+    log "Could not install the man page (continuing)."
+  fi
+fi
+
 cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=Theta Agent Unified Endpoint Management
@@ -359,10 +518,19 @@ WantedBy=multi-user.target
 EOF
 
 # 6. Start the agent
+#
+# On a fresh install, always. On an upgrade, only if it was running when we
+# started -- an operator who had deliberately stopped the agent on this host
+# should not find it running again because they installed a newer build.
 log "Enabling and starting Theta Agent..."
 systemctl daemon-reload
 systemctl enable theta-agent
-systemctl start theta-agent
+if [ "$AGENT_WAS_INSTALLED" -eq 0 ] || [ "$AGENT_WAS_RUNNING" -eq 1 ]; then
+  systemctl start theta-agent
+else
+  log "theta-agent was stopped before this upgrade -- leaving it stopped."
+  log "Start it with: systemctl start theta-agent"
+fi
 
 log "Theta Agent installation complete!"
 log "Verify status with: systemctl status theta-agent"
