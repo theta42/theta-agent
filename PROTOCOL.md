@@ -164,6 +164,13 @@ resource of the host and its health.
 - A service removed from `agent.yml` stops appearing here; the directory drops
   its child resource on the next reconciliation.
 
+**The daemon re-reads `agent.yml` before each telemetry frame** (since v2.14.0).
+`theta-agent register` runs in its own process: it writes the service into
+`agent.yml` and notifies the directory over a one-shot socket. The daemon held
+its configuration in memory, so a just-registered service never appeared in
+`services:` on the wire — the directory created the child resource from the
+registration frame and then received no status sample for it, indefinitely.
+
 ### 3.6 Service Registration (Agent → Server)
 
 The agent declares a service it wants the directory to track as a child of its
@@ -241,6 +248,31 @@ These commands **require** an Ed25519 signature in the payload. The agent verifi
 | `wireguard_apply` | `{ "config": "...", "signature": "..." }` | Writes the peer config and brings the tunnel up (gated by `capabilities.wireguard`). See §4.3. |
 | `wireguard_remove` | `{ "signature": "..." }` | Tears the tunnel down (gated by `capabilities.wireguard`). |
 | `desktop_control` | `{ "subAction": "...", "user": "...", "signature": "..." }` | Lock, log out, blank the display, or suspend. See §4.4. |
+| `systemd_action` | `{ "service": "...", "subtype": "...", "action": "...", "signature": "..." }` | Start/stop/restart/reload a registered service. See §4.5. |
+
+### 4.5 `systemd_action` — service lifecycle (changed in v2.14.0)
+
+Despite the name (kept for wire compatibility), this drives every kind of
+service the agent can register, not just systemd units:
+
+| `subtype` | Command run |
+| :--- | :--- |
+| `systemd`, absent, or unknown | `systemctl <action> <service>` |
+| `docker` / `podman` | `docker\|podman <action> <service>` (`status` → `inspect`) |
+| `openrc` | `rc-service <service> <action>` — note the reversed argument order |
+
+`action` is an **allowlist**: `start`, `stop`, `restart`, `reload`, `status`.
+Anything else is refused without running a command. The action is interpolated
+into an argv, so this is a closed set rather than a passthrough — signature
+verification makes an arbitrary value hard to reach, but "hard to reach" is not
+"closed". `reload` is refused for containers, which have no equivalent; quietly
+substituting a restart would be a surprising thing to do to a running service.
+
+`status` is the one action that does **not** require a signature — it reads and
+changes nothing.
+
+Before v2.14.0 every subtype was sent to `systemctl`, so restarting a docker
+container targeted a unit that did not exist.
 
 ### 4.3 `wireguard_apply` and the private-key placeholder
 

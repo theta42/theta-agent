@@ -308,7 +308,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.13.0"
+const AgentVersion = "v2.14.0"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
@@ -674,6 +674,9 @@ func collectGPUUsage(exec Executor) float64 {
 
 // StartTelemetryLoop manages the initial discovery push and the periodic telemetry stream.
 func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopCh <-chan struct{}) {
+	// Establish the on-disk baseline before the first tick, so the first
+	// ReloadIfChanged reports a real edit rather than "the file exists".
+	_, _ = cm.ReloadIfChanged()
 	cfg := cm.Get()
 
 	// 1. Immediate Discovery Push & Initial Telemetry Frame
@@ -696,6 +699,17 @@ func StartTelemetryLoop(c MessageWriter, cm *ConfigManager, exec Executor, stopC
 			case <-stopCh:
 				return
 			case <-ticker.C:
+				// Pick up agent.yml edits made by another process. `theta-agent
+				// register` writes the file and notifies the Directory from its
+				// own short-lived process; without this the daemon kept
+				// reporting the service list it started with, so a
+				// just-registered service produced a resource in the Directory
+				// that never received a single status sample.
+				if changed, rerr := cm.ReloadIfChanged(); rerr != nil {
+					log.Printf("[config] could not reload %s: %v", cm.configPath, rerr)
+				} else if changed {
+					log.Println("[config] agent.yml changed on disk -- reloaded")
+				}
 				currentCFG := cm.Get()
 				if !currentCFG.Capabilities.Telemetry {
 					continue

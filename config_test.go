@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -256,5 +257,86 @@ func TestClearEnrollment(t *testing.T) {
 	out, _ := os.ReadFile(path)
 	if strings.Contains(string(out), "tok-abc") {
 		t.Errorf("old token should be gone from file, got:\n%s", out)
+	}
+}
+
+// TestReloadIfChangedPicksUpAnotherProcessesEdit is the regression for a
+// just-registered service never appearing in telemetry.
+//
+// `theta-agent register` writes agent.yml from its OWN process and tells the
+// Directory over a one-shot socket. The daemon held its config in memory, so
+// `services:` on the wire stayed as it was at startup: the Directory created
+// the service resource from the registration and then never got a status
+// sample for it.
+func TestReloadIfChangedPicksUpAnotherProcessesEdit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.yml")
+	write := func(body string) {
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+	write("server_url: \"wss://sso\"\nauth_token: \"t\"\nservices: []\n")
+
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatalf("NewConfigManager: %v", err)
+	}
+
+	// The first call only establishes the baseline; it must not claim a change.
+	if changed, err := cm.ReloadIfChanged(); err != nil || changed {
+		t.Fatalf("first ReloadIfChanged = (%v, %v), want (false, nil)", changed, err)
+	}
+	// And an unchanged file stays unchanged.
+	if changed, err := cm.ReloadIfChanged(); err != nil || changed {
+		t.Fatalf("unchanged ReloadIfChanged = (%v, %v), want (false, nil)", changed, err)
+	}
+
+	// Another process registers a service.
+	write("server_url: \"wss://sso\"\nauth_token: \"t\"\nservices:\n  - name: emby-server\n    subtype: systemd\n")
+	// Same-second writes would compare equal on a filesystem with coarse mtime.
+	os.Chtimes(path, time.Now().Add(2*time.Second), time.Now().Add(2*time.Second))
+
+	changed, err := cm.ReloadIfChanged()
+	if err != nil {
+		t.Fatalf("ReloadIfChanged after edit: %v", err)
+	}
+	if !changed {
+		t.Fatal("an edit by another process was not noticed")
+	}
+	got := cm.Get().Services
+	if len(got) != 1 || got[0].Name != "emby-server" {
+		t.Fatalf("Services = %+v, want the newly registered emby-server", got)
+	}
+}
+
+// A half-written or briefly invalid file must not take the running agent's
+// configuration away from it.
+func TestReloadIfChangedKeepsTheLastGoodConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.yml")
+	if err := os.WriteFile(path, []byte("server_url: \"wss://sso\"\nauth_token: \"good\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cm.ReloadIfChanged()
+
+	if err := os.WriteFile(path, []byte("server_url: \"wss://sso\"\n  auth_token: [oops\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(path, time.Now().Add(2*time.Second), time.Now().Add(2*time.Second))
+
+	changed, rerr := cm.ReloadIfChanged()
+	if rerr == nil {
+		t.Fatal("expected an error for an unparseable config")
+	}
+	if changed {
+		t.Error("a failed reload must not report a change")
+	}
+	if got := cm.Get().AuthToken; got != "good" {
+		t.Errorf("auth_token = %q; the last good config must survive a bad write", got)
 	}
 }

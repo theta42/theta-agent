@@ -102,6 +102,58 @@ systemctl enable theta-agent
 systemctl start theta-agent
 ```
 
+## Re-running the installer
+
+Re-running `install.sh` on a host that already has an agent is the supported way
+to upgrade it, re-point it at a different directory, or re-key it. Three things
+happen that did not before v2.14.0:
+
+**A running agent is stopped first.** On Linux, `mv -f` over a running binary
+succeeds and the live process carries on from the old inode — so an upgrade
+reported success and changed nothing until something restarted the service. The
+installer now asks systemd (`systemctl cat` / `is-active`, not "is the unit file
+at the path I expect"), stops the service, waits, and kills it if it will not
+go. Anything else still executing the binary — a hand-started `theta-agent run`,
+a leftover from a unit that was since removed — is found via `/proc/<pid>/exe`
+and stopped too. A host where the agent was deliberately stopped is not started
+again by an upgrade.
+
+**Stale credentials are cleared.** If the join key differs from the stored one,
+or `--url` points at a different directory than the one in `agent.yml`, the old
+`auth_token` and `public_key` are discarded. This is not tidiness: `Credential()`
+prefers `auth_token` over `join_key`, so a token issued by a directory that no
+longer exists is presented — and rejected — on every connect, while the join key
+sitting beside it in the same file is never tried. `public_key` fails the same
+way in the other direction: it is the *directory's* signing key, so a rebuilt
+directory signs commands the host will not verify.
+
+Force it with `--reset-keys` when nothing else changed:
+
+```bash
+sh install.sh --url "https://sso.example.com" --join-key "<new-key>" --reset-keys
+```
+
+Or on the host directly, without re-running the installer:
+
+```bash
+theta-agent reset-enrollment          # blank auth_token + public_key
+theta-agent reset-enrollment --keys   # also discard the WireGuard identity
+```
+
+`reset-enrollment` refuses when there is no `join_key` to fall back on, rather
+than leaving the host with no credential at all. `--keys` is opt-in: the mesh
+key is this host's own identity, the directory only ever stores its public half,
+and re-enrolment registers the same public key again — deleting it orphans the
+peer entry and forces a new mesh address.
+
+**The configuration is checked before a service is built around it.**
+
+```bash
+theta-agent verify --path /etc/theta42/agent.yml
+```
+
+Exits non-zero if anything will stop the agent working, so it can gate a script.
+
 ## Troubleshooting
 
 ### Verifying Connection
