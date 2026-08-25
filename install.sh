@@ -50,6 +50,45 @@ install_sssd_deps() {
   chmod 755 /etc/sssd
 }
 
+# Install the WireGuard userspace tools if missing.
+#
+# The kernel module ships with every supported kernel, so it is easy to assume
+# WireGuard "is there" -- but `wg` and `wg-quick` come from a separate package
+# that a Debian/Ubuntu desktop image does not include. Without them the agent
+# enrols into the mesh, is allocated an address, gets a peer at the gateway and
+# receives its pushed config, and then fails at `wg-quick up` with an exec
+# error nobody sees. Every visible layer says the mesh is fine.
+#
+# Best-effort like install_sssd_deps: an air-gapped or unusual host must still
+# finish installing the agent. But unlike SSSD this is not optional-by-flag,
+# because the wireguard capability is on by default in the config written below.
+install_wireguard_deps() {
+  if command -v wg-quick >/dev/null 2>&1 && command -v wg >/dev/null 2>&1; then
+    log "WireGuard tools are already installed."
+    return 0
+  fi
+  log "Installing WireGuard userspace tools (wg, wg-quick)..."
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y wireguard-tools || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y wireguard-tools || true
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -S --noconfirm wireguard-tools || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper in -y wireguard-tools || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache wireguard-tools || true
+  fi
+  if ! command -v wg-quick >/dev/null 2>&1; then
+    # Not fatal -- everything except the mesh works without it -- but it must
+    # not be silent, which is exactly how this got missed the first time.
+    echo -e "${RED}[!]${NC} wg-quick is still not installed. The agent will enrol into the mesh but cannot bring the tunnel up; install your distribution's wireguard-tools package and restart theta-agent."
+  fi
+}
+
 # 2. Argument Parsing
 URL=""
 TOKEN=""
@@ -140,6 +179,14 @@ if [ ! -f "$CONFIG_FILE" ] && [ -z "$B64_CONFIG" ] && [ -z "$URL" ] && [ -n "$TO
 fi
 
 log "Starting Theta Agent installation..."
+
+# Dependencies. install_sssd_deps existed here from the beginning and was
+# never called once -- --install-sssd/--ldap set INSTALL_SSSD and nothing ever
+# read it, so the flag documented in the usage text did nothing at all.
+if [ "$INSTALL_SSSD" -eq 1 ]; then
+  install_sssd_deps
+fi
+install_wireguard_deps
 
 # Architecture and OS detection
 OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"

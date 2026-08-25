@@ -245,7 +245,7 @@ These commands **require** an Ed25519 signature in the payload. The agent verifi
 | `register_service` | `{ "service": "...", "subtype": "...", "signature": "..." }` | Registers a systemd service as a child resource of this host (gated by `capabilities.service_registration`). |
 | `unregister_service` | `{ "service": "...", "signature": "..." }` | Removes a registered service's child resource (gated by `capabilities.service_registration`). |
 | `shutdown` | `{ "signature": "..." }` | Powers the host off (gated by `capabilities.reboot`). |
-| `wireguard_apply` | `{ "config": "...", "signature": "..." }` | Writes the peer config and brings the tunnel up (gated by `capabilities.wireguard`). See §4.3. |
+| `wireguard_apply` | `{ "config": "...", "siteId": 1, "exitSiteId": null, "signature": "..." }` | Stores the peer config, and brings the tunnel up **if it should be up right now** (gated by `capabilities.wireguard`). See §4.3. |
 | `wireguard_remove` | `{ "signature": "..." }` | Tears the tunnel down (gated by `capabilities.wireguard`). |
 | `desktop_control` | `{ "subAction": "...", "user": "...", "signature": "..." }` | Lock, log out, blank the display, or suspend. See §4.4. |
 | `systemd_action` | `{ "service": "...", "subtype": "...", "action": "...", "signature": "..." }` | Start/stop/restart/reload a registered service. See §4.5. |
@@ -290,6 +290,50 @@ the agent does not touch its key file in that case.
 
 An agent that receives a placeholder it cannot fill answers `error` rather than
 writing a config that cannot come up.
+
+#### Storing is not the same as connecting (changed in v2.15.0)
+
+`wireguard_apply` used to run `wg-quick up` unconditionally. That made a config
+undeliverable ahead of the moment it was needed: pushing one to a host sitting
+at home raised the tunnel, and the next home-monitor tick tore it straight back
+down — a flap on every exit change, and the reason nothing pushed a config at
+enrolment.
+
+The config is now always persisted; whether it is *run* is a separate decision:
+
+| `auto_vpn` | Tunnel raised on apply? |
+| :--- | :--- |
+| on | Only when the tunnel should be up right now — away from home, or a **remote** exit selected (see §4.3.1). |
+| off | Only if it is already up, so a new exit takes effect. A tunnel the user deliberately left down is not raised. |
+
+The response is `wireguard config stored` rather than `wireguard applied` when
+the config was persisted without being raised.
+
+Re-applying over a live tunnel cycles it (`wg-quick down` then `up`;
+`/uninstalltunnelservice` then `/installtunnelservice` on Windows). `wg-quick up`
+refuses an interface that already exists, so re-applying used to fail outright —
+which is exactly what changing your exit does.
+
+#### 4.3.1 `siteId` / `exitSiteId`
+
+`siteId` is the site this device belongs to; `exitSiteId` is the site it egresses
+through, or `null` for its own site's local breakout. Both are sent with the
+config so the agent never has to ask, and both are what decide whether the
+tunnel should be up:
+
+| Location | Exit | Tunnel |
+| :--- | :--- | :--- |
+| away | any, including none | **up** — the point of auto-VPN |
+| home | none, or this device's own site | down |
+| home | another site | **up** — a geolocation exit is wanted at home too |
+
+Selecting your own site as the exit means "egress where I normally would",
+which a device sitting at home is already doing; it is not a reason to hold a
+tunnel up. An `exitSiteId` the agent has no metadata for is treated as remote —
+a deliberate selection is better honoured than ignored.
+
+An older Directory that omits both fields leaves the agent on what it learned
+at enrolment (§6).
 
 ### 4.4 `desktop_control`
 

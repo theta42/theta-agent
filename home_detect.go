@@ -26,6 +26,9 @@ var homeState struct {
 	autoVPN       bool
 	exits         []TrayExit // exits this device may choose (from the directory)
 	currentExit   *int       // nil = local breakout
+	homeSiteID    int        // this device's own site, from enrolment
+	isHome        bool       // last answer from detectHome
+	homeKnown     bool       // whether isHome has been computed even once
 }
 
 // publicIPProviders are tried in order until one succeeds.
@@ -85,6 +88,97 @@ func MeshExits() ([]TrayExit, *int) {
 	homeState.mu.RLock()
 	defer homeState.mu.RUnlock()
 	return homeState.exits, homeState.currentExit
+}
+
+// SetMeshIdentity records what the directory says about this device: which
+// site it belongs to, and which site (if any) it currently exits through.
+//
+// Both arrive on enrolment and on every config push, so the agent does not
+// have to go and ask -- which matters because the answer is what decides
+// whether the tunnel should be up, and a decision that needs a round trip is a
+// decision that is sometimes made on stale information.
+func SetMeshIdentity(homeSiteID int, exitSiteID *int) {
+	homeState.mu.Lock()
+	if homeSiteID > 0 {
+		homeState.homeSiteID = homeSiteID
+	}
+	homeState.currentExit = exitSiteID
+	homeState.mu.Unlock()
+}
+
+// SetHomeState records the last home/away answer so callers outside the
+// monitor loop (a pushed config, the tray) can act on the same one rather
+// than deriving their own.
+func SetHomeState(isHome bool) {
+	homeState.mu.Lock()
+	homeState.isHome = isHome
+	homeState.homeKnown = true
+	homeState.mu.Unlock()
+}
+
+// HomeState returns the last answer and whether one has been computed yet.
+func HomeState() (isHome, known bool) {
+	homeState.mu.RLock()
+	defer homeState.mu.RUnlock()
+	return homeState.isHome, homeState.homeKnown
+}
+
+// remoteExitSelected reports whether this device is routed through a site
+// other than its own.
+//
+// Selecting your OWN site as the exit means "egress where I normally would",
+// which is what a device sitting at home is already doing -- so it is not a
+// reason to hold a tunnel up. Selecting somebody else's site is: that is the
+// geolocation case, and it is wanted at home as much as away.
+func remoteExitSelected() bool {
+	homeState.mu.RLock()
+	defer homeState.mu.RUnlock()
+	if homeState.currentExit == nil {
+		return false
+	}
+	if homeState.homeSiteID > 0 {
+		return *homeState.currentExit != homeState.homeSiteID
+	}
+	// No site identity yet: fall back to the exit list, which flags the
+	// device's own site as local.
+	for _, e := range homeState.exits {
+		if e.SiteID == *homeState.currentExit {
+			return !e.IsLocal
+		}
+	}
+	// An exit we know nothing about is, by construction, not this device's own
+	// site -- and a deliberate selection is better honoured than ignored.
+	return true
+}
+
+// tunnelShouldBeUp is the whole policy, in one place.
+//
+//	away          -> up. The point of the mesh on a laptop: leave the house,
+//	                 the tunnel comes up, traffic is carried by the site.
+//	home + remote exit -> up. The user picked another site's egress on
+//	                 purpose (geolocation); being at home does not undo that.
+//	home + own site / no exit -> down. Nothing to gain from hairpinning your
+//	                 own LAN through your own gateway.
+func tunnelShouldBeUp(isHome bool) bool {
+	return !isHome || remoteExitSelected()
+}
+
+// wantWireGuardUp answers "should the tunnel be running right now" for callers
+// that are not the monitor loop -- chiefly a pushed peer config.
+func wantWireGuardUp() bool {
+	// Auto-VPN off means the user drives the tunnel by hand. Refresh one that
+	// is already up so a new exit takes effect, but never raise one they have
+	// deliberately left down.
+	if !AutoVPN() {
+		return defaultPlatformOps.WireGuardState()
+	}
+	isHome, known := HomeState()
+	if !known {
+		// Nothing has been measured yet. Staying down is the recoverable
+		// error: the monitor runs within the minute and will bring it up.
+		return false
+	}
+	return tunnelShouldBeUp(isHome)
 }
 
 // SetVPNActive is called when WireGuard tunnel state changes.
@@ -155,6 +249,7 @@ func checkAndPush(cfg *Config, connectedFn func() bool) {
 	// and the auto-VPN decision could disagree -- and both carried the same
 	// `|| homePublicIP == ""` clause that pinned every agent to "home".
 	isHome := detectHome(cfg, agentIP, homeIP, lanEP, connected)
+	SetHomeState(isHome)
 
 	// WireGuard state + auto-VPN (DESIGN-WINDOWS.md §5). The tunnel can be
 	// driven by the SSO (wireguard_apply/remove) or by the tray; polling keeps
@@ -172,8 +267,11 @@ func checkAndPush(cfg *Config, connectedFn func() bool) {
 // hammer connect/disconnect on every poll.
 var lastAutoVPNChange time.Time
 
-// handleAutoVPN connects the tunnel when away from home and auto-connect is on,
-// and drops it again once back on the home LAN.
+// handleAutoVPN drives the tunnel towards the state tunnelShouldBeUp() asks
+// for. It used to test home/away alone, which meant an exit chosen for
+// geolocation was torn down the moment the device came home -- the one place
+// the user had explicitly said what they wanted, and the only place it was
+// ignored.
 func handleAutoVPN(cfg *Config, isHome, vpn, autoVPN, connected bool) {
 	if !autoVPN || !connected {
 		return
@@ -183,19 +281,27 @@ func handleAutoVPN(cfg *Config, isHome, vpn, autoVPN, connected bool) {
 		return
 	}
 
-	if isHome && vpn {
-		log.Println("[home-detect] back home; disconnecting WireGuard (auto-vpn)")
+	want := tunnelShouldBeUp(isHome)
+	if want == vpn {
+		return
+	}
+
+	if !want {
+		log.Println("[home-detect] back home and no remote exit selected; disconnecting WireGuard (auto-vpn)")
 		if err := defaultPlatformOps.DisconnectWireGuard(); err != nil {
 			log.Printf("[home-detect] disconnect failed: %v", err)
 		}
 		lastAutoVPNChange = now
 		return
 	}
-	if !isHome && !vpn {
+
+	if isHome {
+		log.Println("[home-detect] remote exit selected; connecting WireGuard (auto-vpn)")
+	} else {
 		log.Println("[home-detect] away from home; connecting WireGuard (auto-vpn)")
-		if err := defaultPlatformOps.ConnectWireGuard(); err != nil {
-			log.Printf("[home-detect] connect failed: %v", err)
-		}
-		lastAutoVPNChange = now
 	}
+	if err := defaultPlatformOps.ConnectWireGuard(); err != nil {
+		log.Printf("[home-detect] connect failed: %v", err)
+	}
+	lastAutoVPNChange = now
 }

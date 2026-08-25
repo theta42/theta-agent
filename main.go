@@ -86,6 +86,15 @@ func runAgent() {
 	// Seed the auto-VPN preference from disk; the tray checkbox updates it.
 	SetAutoVPN(cfg.AutoVPN)
 
+	// Say up front when the mesh cannot possibly work. Without this the only
+	// symptom is one exec error, minutes or days later, at the moment auto-VPN
+	// first fires -- see wg_tools.go.
+	if cfg.Capabilities.WireGuardEnabled() {
+		if err := checkWireGuardTools(); err != nil {
+			log.Printf("[mesh] WARNING: this host cannot bring up the mesh tunnel: %v", err)
+		}
+	}
+
 	// Tray IPC server — desktop tray connects here for status updates.
 	go globalTrayServer.Start()
 

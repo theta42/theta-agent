@@ -219,12 +219,29 @@ func (p *windowsPlatformOps) wireGuardExe() string {
 
 // ApplyWireGuard persists the peer config and installs it as a WireGuard
 // service via the official client (wireguard.exe /installtunnelservice).
-func (p *windowsPlatformOps) ApplyWireGuard(conf string) error {
+// PersistWireGuard writes the peer config without installing or restarting the
+// tunnel service.
+func (p *windowsPlatformOps) PersistWireGuard(conf string) error {
 	if err := os.MkdirAll(filepath.Dir(p.confPath), 0700); err != nil {
 		return fmt.Errorf("wireguard: create config dir: %w", err)
 	}
 	if err := os.WriteFile(p.confPath, []byte(conf), 0600); err != nil {
 		return fmt.Errorf("wireguard: persist config: %w", err)
+	}
+	return nil
+}
+
+func (p *windowsPlatformOps) ApplyWireGuard(conf string) error {
+	if err := p.PersistWireGuard(conf); err != nil {
+		return err
+	}
+	// /installtunnelservice will not replace a service that is already
+	// running, so a re-push over a live tunnel has to remove it first -- the
+	// same cycle wg-quick needs on Linux.
+	if p.WireGuardState() {
+		if out, err := p.exec.Execute(p.wireGuardExe(), "/uninstalltunnelservice", p.tunnelName); err != nil {
+			return fmt.Errorf("wireguard: uninstalltunnelservice %s (before re-applying): %v: %s", p.tunnelName, err, out)
+		}
 	}
 	out, err := p.exec.Execute(p.wireGuardExe(), "/installtunnelservice", p.tunnelName, p.confPath)
 	if err != nil {
