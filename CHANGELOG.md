@@ -1,3 +1,26 @@
+## [v2.14.0] - 2026-08-25
+
+### Added
+- **`theta-agent reset-enrollment`** — discard the credentials this host holds so it enrolls again from its join key. `--keys` additionally deletes the WireGuard private key. `ConfigManager.ClearEnrollment()` already did the right thing but was reachable only from the tray's "re-enroll" menu item, which is not present on a headless host — which is where re-keying actually happens.
+- **Service control understands what kind of service it is.** `systemd_action` now carries a `subtype`, and the agent dispatches on it: `systemctl` for systemd, `docker`/`podman` for containers, `rc-service` (arguments reversed) for OpenRC. See `PROTOCOL.md` §4.5.
+
+### Fixed
+- **Re-running the installer against a rebuilt Directory left the host talking to nothing.** `Config.Credential()` prefers `auth_token` over `join_key`, and `config-set` only ever writes the values it is given — so a stale token from the previous Directory stayed in `agent.yml`, won the preference, and was rejected on every connect, while the join key that would have worked sat in the same file and was never tried. `public_key` fails the same way in the other direction: it is the *Directory's* Ed25519 signing key, so a Directory rebuilt from scratch signs commands the host cannot verify.
+
+  `install.sh` now clears both when the supplied join key differs from the stored one, or when `--url` re-points the host at a different Directory. `--reset-keys` forces it when nothing else changed. The clear refuses to run when there is no `join_key` to fall back on, rather than leaving the host with no credential at all.
+
+- **The installer still replaced a running binary in three situations v2.13.0 did not cover.** The stop was gated on `[ -f /etc/systemd/system/theta-agent.service ]` — one of several places a unit can live. A unit under `/lib/systemd` or `/usr/lib/systemd`, or one whose file had been deleted while the service kept running, left the check at "not installed", so the agent was never stopped and `mv -f` went over the live binary. It now asks systemd (`systemctl cat` / `is-active`) rather than the filesystem, gives the stop a bounded 15s and then kills the unit rather than waiting out systemd's 90s default, and finds anything else still executing the binary — a hand-started `theta-agent run`, a leftover from a removed unit — by resolving `/proc/<pid>/exe` rather than matching a process name.
+
+- **A service registered on a host never reported its status.** `theta-agent register systemd <unit>` runs in its **own** process: it writes the service into `agent.yml` and notifies the Directory over a one-shot socket. The daemon — the thing that actually sends telemetry — held its configuration in memory and had no reason to read the file again, so `services:` on the wire stayed as it was at startup. The Directory duly created the service resource from the registration frame and then received no status sample for it, indefinitely: a resource in the tree with permanently empty live status. The daemon now re-reads `agent.yml` before each telemetry frame when it has changed on disk (size + mtime), which also picks up `config-set` and hand edits. A half-written or invalid file leaves the running configuration alone.
+
+- **Every service subtype was sent to `systemctl`.** Restarting a docker container targeted a unit that does not exist, and the failure surfaced as an unexplained non-zero exit rather than as anything an operator could act on.
+
+- **The `systemd_action` verb was passed straight through to an argv.** It is an allowlist now — `start`, `stop`, `restart`, `reload`, `status` — refused before anything runs. Signature verification made an arbitrary value hard to reach; hard to reach is not closed. `reload` is refused for containers, which have no equivalent: quietly substituting a restart would be a surprising thing to do to a running service.
+
+### Documentation
+- `PROTOCOL.md` §4.5 documents `systemd_action`, which was a live command with no documentation at all; §3.5 records that the daemon re-reads `agent.yml` before each telemetry frame.
+- `INSTALL.md` gains a **Re-running the installer** section covering upgrade, re-pointing and re-keying.
+
 ## [v2.13.0] - 2026-08-24
 
 ### Added

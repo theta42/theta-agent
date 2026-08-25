@@ -9,6 +9,7 @@ _theta_agent() {
         'get-secret:Fetch one secret value from OpenBao'
         'get-secrets:Fetch every secret this host may read'
         'verify:Check that this hosts configuration and keys are usable'
+        'reset-enrollment:Discard this hosts credentials so it enrolls again'
         'config-set:Merge settings into agent.yml'
         'reinitialize:Reset enrolment credentials and register again'
         'discover:List theta-suite sites announced on this network'

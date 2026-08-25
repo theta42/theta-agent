@@ -57,6 +57,9 @@ JOIN_KEY=""
 PUBLIC_KEY=""
 B64_CONFIG=""
 INSTALL_SSSD=0
+# Discard the credentials this host already holds and enroll again from the
+# join key, even when nothing else about the configuration changed.
+RESET_KEYS=0
 # auto | yes | no -- whether to install the desktop tray companion.
 INSTALL_TRAY="auto"
 
@@ -93,6 +96,10 @@ while [ $# -gt 0 ]; do
     # (see host_is_desktop below); these override it either way.
     --tray)
       INSTALL_TRAY="yes"
+      shift
+      ;;
+    --reset-keys|--reset-enrollment)
+      RESET_KEYS=1
       shift
       ;;
     --no-tray|--headless)
@@ -180,15 +187,40 @@ BINARY_URL="https://github.com/theta42/theta-agent/releases/latest/download/${BI
 AGENT_WAS_RUNNING=0
 AGENT_WAS_INSTALLED=0
 if command -v systemctl >/dev/null 2>&1; then
-  if [ -f "$SERVICE_FILE" ]; then
+  # Ask systemd, not the filesystem.
+  #
+  # This used to be gated on `[ -f "$SERVICE_FILE" ]`, which is only ONE of the
+  # places a theta-agent unit can live: a unit installed under /lib/systemd,
+  # /usr/lib/systemd, or /etc/systemd/system/multi-user.target.wants (and a unit
+  # whose file was deleted while the service kept running) all left
+  # AGENT_WAS_INSTALLED at 0 -- so the running agent was never stopped and the
+  # binary was replaced underneath it. `systemctl cat` finds the unit wherever
+  # it is, and is-active answers for the process rather than for a path.
+  if systemctl cat theta-agent.service >/dev/null 2>&1; then
     AGENT_WAS_INSTALLED=1
+  fi
+  if systemctl is-active --quiet theta-agent 2>/dev/null; then
+    AGENT_WAS_INSTALLED=1
+    AGENT_WAS_RUNNING=1
+    log "An agent is already running -- stopping theta-agent before upgrading it."
+    systemctl stop theta-agent >/dev/null 2>&1 || true
+    # A stop can hang on an agent wedged in a syscall, and `systemctl stop`
+    # reports failure only after its own timeout (90s by default). Give it a
+    # bounded window and then take the unit down hard: the goal is an idle
+    # binary, not a graceful shutdown.
+    _waited=0
+    while systemctl is-active --quiet theta-agent 2>/dev/null; do
+      [ "$_waited" -ge 15 ] && break
+      sleep 1
+      _waited=$((_waited + 1))
+    done
     if systemctl is-active --quiet theta-agent 2>/dev/null; then
-      AGENT_WAS_RUNNING=1
-      log "An agent is already running -- stopping theta-agent before upgrading it."
-      systemctl stop theta-agent || error "Could not stop the running theta-agent service; refusing to replace a binary that is still in use."
-    else
-      log "theta-agent is installed but not running -- upgrading in place."
+      log "theta-agent did not stop within ${_waited}s -- killing it."
+      systemctl kill -s KILL theta-agent >/dev/null 2>&1 || true
+      sleep 1
     fi
+  elif [ "$AGENT_WAS_INSTALLED" -eq 1 ]; then
+    log "theta-agent is installed but not running -- upgrading in place."
   fi
 
   # Per-user tray units. They talk to the daemon over its IPC socket, so a tray
@@ -197,6 +229,52 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl --user --machine="${_u}@.host" stop theta-agent-tray.service >/dev/null 2>&1 || true
   done
 fi
+
+# Anything still executing the binary we are about to replace.
+#
+# systemd is not the only way an agent ends up running: a hand-started
+# `theta-agent run`, an agent left over from a unit that was since removed, or
+# one supervised by something other than systemd all keep the old inode alive.
+# On Linux `mv -f` over a running binary SUCCEEDS and the live process carries
+# on from the old inode, so the installer reports an upgrade that did not
+# happen. Matched on the resolved executable path via /proc/<pid>/exe rather
+# than on a name, so an unrelated process that merely mentions "theta-agent" in
+# its command line is never signalled.
+stop_stray_agents() {
+  [ -x "$BIN_PATH" ] || return 0
+  _target="$(readlink -f "$BIN_PATH" 2>/dev/null || echo "$BIN_PATH")"
+  _found=0
+  for _pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+    [ "$_pid" = "$$" ] && continue
+    _exe="$(readlink -f "/proc/$_pid/exe" 2>/dev/null || true)"
+    [ "$_exe" = "$_target" ] || continue
+    _found=1
+    AGENT_WAS_RUNNING=1
+    log "Found a stray agent still running as PID $_pid -- stopping it."
+    kill "$_pid" 2>/dev/null || true
+  done
+  [ "$_found" -eq 0 ] && return 0
+  # Same bounded-wait-then-kill shape as the unit above.
+  _waited=0
+  while [ "$_waited" -lt 10 ]; do
+    _left=0
+    for _pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+      [ "$_pid" = "$$" ] && continue
+      _exe="$(readlink -f "/proc/$_pid/exe" 2>/dev/null || true)"
+      [ "$_exe" = "$_target" ] && _left=1
+    done
+    [ "$_left" -eq 0 ] && return 0
+    sleep 1
+    _waited=$((_waited + 1))
+  done
+  for _pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+    [ "$_pid" = "$$" ] && continue
+    _exe="$(readlink -f "/proc/$_pid/exe" 2>/dev/null || true)"
+    [ "$_exe" = "$_target" ] && kill -9 "$_pid" 2>/dev/null || true
+  done
+  sleep 1
+}
+stop_stray_agents
 
 # 3. Install binary
 log "Detected OS: $OS_NAME ($ARCH_NAME) -> Downloading binary $BINARY_NAME..."
@@ -271,6 +349,29 @@ else
   # does the merge now: it appends keys that are missing, leaves comments and
   # every other setting alone, and validates the result parses before replacing
   # the file.
+  # Does this re-run re-point the host at a different directory, or hand it a
+  # different join key? If so the credentials it is holding are dead, and
+  # keeping them is not neutral -- Config.Credential() PREFERS auth_token over
+  # join_key, so a stale token from the previous directory is presented (and
+  # rejected) on every single connect while the working join key beside it is
+  # never tried. public_key fails the same way in the other direction: it is
+  # the directory's Ed25519 signing key, so a rebuilt directory signs commands
+  # this host cannot verify. Read the stored values BEFORE config-set
+  # overwrites them.
+  PRIOR_URL="$(sed -n 's/^server_url:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' "$CONFIG_FILE" | head -n1)"
+  PRIOR_JOIN_KEY="$(sed -n 's/^join_key:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' "$CONFIG_FILE" | head -n1)"
+  NEEDS_REENROLL=0
+  if [ "$RESET_KEYS" -eq 1 ]; then
+    NEEDS_REENROLL=1
+    log "--reset-keys given -- this host will enroll from scratch."
+  elif [ -n "$JOIN_KEY" ] && [ "$JOIN_KEY" != "$PRIOR_JOIN_KEY" ]; then
+    NEEDS_REENROLL=1
+    log "A different join key was supplied -- clearing the credentials issued under the old one."
+  elif [ -n "$URL" ] && [ -n "$PRIOR_URL" ] && [ "$URL" != "$PRIOR_URL" ]; then
+    NEEDS_REENROLL=1
+    log "This host is being re-pointed from $PRIOR_URL to $URL -- clearing the old directory's credentials."
+  fi
+
   CONFIG_SET_ARGS=""
   if [ -n "$URL" ];        then CONFIG_SET_ARGS="$CONFIG_SET_ARGS server_url=$URL"; fi
   if [ -n "$TOKEN" ];      then CONFIG_SET_ARGS="$CONFIG_SET_ARGS auth_token=$TOKEN"; fi
@@ -285,6 +386,20 @@ else
     fi
   else
     log "No new settings supplied; leaving $CONFIG_FILE untouched."
+  fi
+
+  # After config-set, so the new join key is already in the file for the agent
+  # to fall back on. reset-enrollment refuses when there is no join_key -- that
+  # is a warning here rather than a failure, because a --url-only re-point of a
+  # token-authenticated host is a legitimate thing to do; the operator just has
+  # to supply the new token themselves.
+  if [ "$NEEDS_REENROLL" -eq 1 ]; then
+    RESET_FLAGS=""
+    [ "$RESET_KEYS" -eq 1 ] && RESET_FLAGS="--keys"
+    # shellcheck disable=SC2086 -- RESET_FLAGS is one optional literal flag.
+    if ! "$BIN_PATH" reset-enrollment --path "$CONFIG_FILE" $RESET_FLAGS; then
+      log "Could not clear the previous enrollment automatically -- if this host does not connect, check auth_token/public_key in $CONFIG_FILE."
+    fi
   fi
 fi
 # 4b. Check the configuration is actually usable before installing a service

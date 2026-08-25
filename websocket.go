@@ -451,6 +451,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 	case "systemd_action":
 		serviceName, _ := msg.Payload["service"].(string)
 		action, _ := msg.Payload["action"].(string)
+		// The Directory records what KIND of service each resource is; a
+		// docker container sent to `systemctl restart` targets a unit that does
+		// not exist. Absent (older Directory) means systemd, which is what
+		// every pre-subtype resource is.
+		subtype, _ := msg.Payload["subtype"].(string)
 		if serviceName == "" {
 			sendResponse("error", "service name required")
 			return
@@ -462,8 +467,8 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", "signature verification failed")
 			return
 		}
-		log.Printf("Executing systemctl %s %s...", action, serviceName)
-		out, err := defaultPlatformOps.ServiceControl(serviceName, action)
+		log.Printf("Executing %s %s (%s)...", action, serviceName, subtypeOrSystemd(subtype))
+		out, err := controlService(defaultPlatformOps, subtype, serviceName, action)
 		errMsg := ""
 		if err != nil {
 			errMsg = err.Error()
@@ -471,6 +476,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		respMap := map[string]interface{}{
 			"status":  "ok",
 			"service": serviceName,
+			"subtype": subtypeOrSystemd(subtype),
 			"action":  action,
 			"output":  string(out),
 			"error":   errMsg,

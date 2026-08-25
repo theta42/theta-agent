@@ -150,6 +150,38 @@ FLAGS
   theta-agent verify --path ./agent.yml`,
 	},
 	{
+		Name:    "reset-enrollment",
+		Args:    "[flags]",
+		Aliases: []string{"reset-enrolment", "reenroll", "re-enroll"},
+		Summary: "Discard this host's credentials so it enrolls again",
+		Detail: `Blank auth_token and public_key in agent.yml. The agent then
+authenticates with its join_key on the next connect, receives a fresh token,
+and is re-issued the Directory's current signing key.
+
+Use it when the Directory this host enrolled with has been rebuilt or replaced.
+A token issued by the old Directory is not merely wrong, it WINS: the agent
+prefers auth_token over join_key, so a stale one is presented (and rejected) on
+every connect while the join key beside it is never tried. public_key has the
+same problem in the other direction -- it is the Directory's signing key, so a
+rebuilt Directory signs with a key this host will not verify, and every signed
+command fails.
+
+Refuses to run when there is no join_key to fall back on, rather than leaving
+the host with no credential at all.
+
+FLAGS
+  --path <file>    config to reset (default /etc/theta42/agent.yml)
+  --keys           ALSO delete this host's WireGuard private key. Not the
+                   default: the key is this host's own identity, the Directory
+                   stores only its public half, and re-enrolment registers the
+                   same public key again. Deleting it orphans the peer entry
+                   and forces a new mesh address.
+  --quiet          print nothing; report only through the exit status
+
+  theta-agent reset-enrollment
+  theta-agent reset-enrollment --keys`,
+	},
+	{
 		Name:    "config-set",
 		Args:    "<key>=<value>...",
 		Summary: "Merge settings into agent.yml",

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -132,6 +133,10 @@ type ConfigManager struct {
 	mu         sync.RWMutex
 	current    *Config
 	configPath string
+	// Last observed size/mtime of configPath, for ReloadIfChanged. Zero until
+	// the first call, which only establishes the baseline.
+	lastSize int64
+	lastMod  time.Time
 }
 
 func NewConfigManager(path string) (*ConfigManager, error) {
@@ -162,6 +167,53 @@ func (cm *ConfigManager) Reload() error {
 	cm.current = cfg
 	cm.mu.Unlock()
 	return nil
+}
+
+// ReloadIfChanged re-reads agent.yml when it has changed on disk since the last
+// read, and reports whether it did.
+//
+// # THE BUG THIS EXISTS TO FIX
+//
+// `theta-agent register systemd <unit>` runs in its OWN process: it writes the
+// service into agent.yml and opens a one-shot WebSocket to tell the Directory.
+// The DAEMON, which is what actually reports telemetry, holds its config in
+// memory and had no reason to look at the file again -- so the newly registered
+// service never appeared in `services:` on the wire. The Directory duly created
+// the service resource from the registration frame, and then never received a
+// single status sample for it: a resource in the tree with permanently empty
+// live status, which is exactly what was reported. The same silence swallowed
+// `theta-agent config-set` and any hand edit until the service was restarted.
+//
+// Compares size and mtime rather than hashing: agent.yml is written by rename,
+// so a change always moves both.
+func (cm *ConfigManager) ReloadIfChanged() (bool, error) {
+	fi, err := os.Stat(cm.configPath)
+	if err != nil {
+		return false, err
+	}
+	cm.mu.Lock()
+	unchanged := cm.lastSize == fi.Size() && cm.lastMod.Equal(fi.ModTime()) && !cm.lastMod.IsZero()
+	cm.mu.Unlock()
+	if unchanged {
+		return false, nil
+	}
+
+	cfg, lerr := LoadConfig(cm.configPath)
+	if lerr != nil {
+		// A half-written or briefly invalid file must not take the running
+		// agent's config away from it; keep what we have and try again next tick.
+		return false, fmt.Errorf("reload %s: %w", cm.configPath, lerr)
+	}
+	cm.mu.Lock()
+	first := cm.lastMod.IsZero()
+	cm.current = cfg
+	cm.lastSize = fi.Size()
+	cm.lastMod = fi.ModTime()
+	cm.mu.Unlock()
+	// The first call only establishes the baseline -- the config it "reloaded"
+	// is the one already in memory, and reporting that as a change would log a
+	// reload on every startup.
+	return !first, nil
 }
 
 // PersistEnrollment writes the credentials the server issued during join-key

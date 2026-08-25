@@ -86,6 +86,9 @@ func handleCLI(args []string) bool {
 	case "verify":
 		runVerify(args[1:])
 		return true
+	case "reset-enrollment", "reset-enrolment", "reenroll", "re-enroll":
+		runResetEnrollment(args[1:])
+		return true
 	}
 	return false
 }
