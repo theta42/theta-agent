@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -9,10 +10,18 @@ import (
 // argvRecorder captures the exact argv it was asked to run. The whole class of
 // bug here is "ran the wrong thing", so the assertion has to be on argv and not
 // on a substring.
-type argvRecorder struct{ calls [][]string }
+type argvRecorder struct {
+	calls [][]string
+	// fail names commands that should report failure, so a test can describe
+	// a host where (say) `ip link show` finds no interface.
+	fail map[string]bool
+}
 
 func (r *argvRecorder) Execute(command string, args ...string) ([]byte, error) {
 	r.calls = append(r.calls, append([]string{command}, args...))
+	if r.fail[command] {
+		return nil, errors.New("mock: " + command + " failed")
+	}
 	return []byte("ok"), nil
 }
 func (r *argvRecorder) WriteFile(string, []byte, os.FileMode) error { return nil }

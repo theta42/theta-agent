@@ -308,7 +308,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.14.0"
+const AgentVersion = "v2.15.0"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
@@ -367,6 +367,12 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 			"service_control":      cfg.Capabilities.ServiceControl,
 			"service_registration": cfg.Capabilities.ServiceRegistration,
 			"arbitrary_bash":       cfg.Capabilities.ArbitraryBash,
+			"wireguard":            cfg.Capabilities.WireGuardEnabled(),
+			// Enabled is a policy setting; ready is whether wg-quick is
+			// actually installed. They came apart silently before: a host
+			// could be enrolled in the mesh, with a peer at the gateway, and
+			// still have no way to bring the interface up.
+			"wireguard_ready": WireGuardToolsReady(),
 		},
 	}
 }

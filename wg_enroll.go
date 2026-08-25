@@ -162,6 +162,11 @@ func ensureMeshIdentity(cm *ConfigManager) {
 		device, err := enrollMeshIdentity(cfg, kp.PublicKey)
 		if err == nil {
 			log.Printf("[mesh] enrolled as %q at %s (site %d)", device.Name, device.AssignedIP, device.SiteID)
+			// Which site this device belongs to, and which one it exits
+			// through, is what tunnelShouldBeUp() reads. Recording it here
+			// means the answer is available from the first enrolment rather
+			// than only after the directory happens to push a config.
+			SetMeshIdentity(device.SiteID, device.ExitSiteID)
 			// The device row now exists, so the exit list is answerable.
 			refreshMeshExits(cfg)
 			return
@@ -271,4 +276,7 @@ func refreshMeshExits(cfg *Config) {
 		})
 	}
 	SetMeshExits(tray, current)
+	// The exits response also carries the current selection, which is one of
+	// the two inputs to whether the tunnel should be up.
+	SetMeshIdentity(0, current)
 }

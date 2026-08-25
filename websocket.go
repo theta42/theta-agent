@@ -637,6 +637,28 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", cerr.Error())
 			return
 		}
+		// The directory says which site this device belongs to and which one
+		// it exits through; both decide whether the tunnel should be running.
+		// Sent with the config so the agent never has to ask -- see
+		// SetMeshIdentity.
+		SetMeshIdentity(intFromPayload(msg.Payload, "siteId"), optIntFromPayload(msg.Payload, "exitSiteId"))
+
+		// Receiving a config and running it are two different decisions.
+		// Applying unconditionally meant a push to a host sitting at home
+		// brought the tunnel up and the next home-monitor tick tore it back
+		// down -- a flap on every exit change, and the reason a config could
+		// not be delivered ahead of the moment it is needed.
+		if err := defaultPlatformOps.PersistWireGuard(conf); err != nil {
+			log.Printf("WireGuard apply failed: %v", err)
+			sendResponse("error", fmt.Sprintf("wireguard apply failed: %v", err))
+			return
+		}
+		if !wantWireGuardUp() {
+			log.Printf("[mesh] peer config stored; leaving the tunnel down (at home, no remote exit selected)")
+			SetVPNActive(defaultPlatformOps.WireGuardState())
+			sendResponse("ok", "wireguard config stored")
+			return
+		}
 		log.Printf("Applying WireGuard peer config...")
 		if err := defaultPlatformOps.ApplyWireGuard(conf); err != nil {
 			log.Printf("WireGuard apply failed: %v", err)

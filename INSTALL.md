@@ -38,13 +38,25 @@ curl -fsSL https://sso.example.com/resources/theta-agent/install.sh | sh -s -- \
    values you pass are updated, keys the file lacks are added, and comments and
    nested blocks are left alone. You no longer need to delete `agent.yml` first
    for new settings to take effect.
-3. Installs a systemd service unit and starts the agent.
-4. Installs the desktop tray as a systemd **user** unit
+3. Installs the WireGuard userspace tools (`wg`, `wg-quick`) if they are
+   missing. The kernel module ships with the OS, but the tools are a separate
+   package that a Debian/Ubuntu desktop image does not include — and without
+   them the host enrols into the mesh, is allocated an address and receives its
+   peer config, then cannot bring the interface up. If the install fails the
+   script says so and carries on; everything except the mesh works without it.
+4. Installs a systemd service unit and starts the agent.
+5. Installs the desktop tray as a systemd **user** unit
    (`/etc/systemd/user/theta-agent-tray.service`), enables it for future
    sessions, and starts it in any graphical session already running — so it
    appears without a re-login. It exits silently on a host with no graphical
    session. Any older `/etc/xdg/autostart/theta-agent-tray.desktop` is removed
    so the two cannot both launch.
+
+On a host that already had the agent installed before the tools were added to
+the installer, check with `wg-quick --help`; if it is missing, install
+`wireguard-tools` and restart `theta-agent`. The agent logs
+`[mesh] WARNING: this host cannot bring up the mesh tunnel` at startup when the
+tools are absent, and reports `wireguard_ready: false` in its discovery data.
 
 On first connect the agent also generates its WireGuard identity at
 `/etc/theta42/wg_private.key` (`0600`, root only) and registers the **public**

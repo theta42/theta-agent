@@ -301,12 +301,34 @@ func (p *linuxPlatformOps) SelfRestart() {
 
 // ApplyWireGuard persists the peer config and brings the tunnel up with
 // wg-quick (wg-quick reads /etc/wireguard/<name>.conf by interface name).
-func (p *linuxPlatformOps) ApplyWireGuard(conf string) error {
+// PersistWireGuard writes the peer config where wg-quick will find it by
+// interface name, and does nothing else.
+func (p *linuxPlatformOps) PersistWireGuard(conf string) error {
+	// Checked before the config is written, so a host without the tools says
+	// what is wrong instead of leaving a config behind that nothing can run.
+	if err := checkWireGuardTools(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(p.confPath), 0700); err != nil {
 		return fmt.Errorf("wireguard: create config dir: %w", err)
 	}
 	if err := os.WriteFile(p.confPath, []byte(conf), 0600); err != nil {
 		return fmt.Errorf("wireguard: persist config: %w", err)
+	}
+	return nil
+}
+
+func (p *linuxPlatformOps) ApplyWireGuard(conf string) error {
+	if err := p.PersistWireGuard(conf); err != nil {
+		return err
+	}
+	// `wg-quick up` refuses an interface that already exists, so re-applying
+	// over a live tunnel used to fail outright -- which is exactly what
+	// changing your exit does. Cycle it instead.
+	if p.WireGuardState() {
+		if out, err := p.exec.Execute("wg-quick", "down", p.tunnelName); err != nil {
+			return fmt.Errorf("wireguard: wg-quick down %s (before re-applying): %v: %s", p.tunnelName, err, out)
+		}
 	}
 	out, err := p.exec.Execute("wg-quick", "up", p.tunnelName)
 	if err != nil {
@@ -316,6 +338,9 @@ func (p *linuxPlatformOps) ApplyWireGuard(conf string) error {
 }
 
 func (p *linuxPlatformOps) RemoveWireGuard() error {
+	if err := checkWireGuardTools(); err != nil {
+		return err
+	}
 	out, err := p.exec.Execute("wg-quick", "down", p.tunnelName)
 	if err != nil {
 		return fmt.Errorf("wireguard: wg-quick down %s: %v: %s", p.tunnelName, err, out)

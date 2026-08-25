@@ -75,6 +75,11 @@ func (m *MockExecutor) ReadFile(path string) ([]byte, error) {
 }
 
 func TestHandleCommand(t *testing.T) {
+	// These cases are about command dispatch, not about whether the machine
+	// running the tests happens to have wireguard-tools installed -- so state
+	// the host has them (see wg_tools.go).
+	withLookPath(t, "wg", "wg-quick")
+
 	tests := []struct {
 		name             string
 		cfg              *Config
@@ -218,22 +223,6 @@ func TestHandleCommand(t *testing.T) {
 			},
 			expectedStatus: "error",
 			expectedCmd:    nil,
-		},
-		{
-			name: "wireguard_apply allowed",
-			cfg: &Config{
-				PublicKey:    testPubKeyB64(),
-				Capabilities: Capabilities{WireGuard: boolPtr(true)},
-			},
-			msg: WSMessage{
-				Type: "wireguard_apply",
-				Payload: map[string]interface{}{
-					"config": "[Interface]\nAddress = 10.0.0.2/32\n",
-				},
-			},
-			signed:         true,
-			expectedStatus: "ok",
-			expectedCmd:    []string{"wg-quick", "up", "theta-mesh"},
 		},
 		{
 			name: "wireguard_apply denied",

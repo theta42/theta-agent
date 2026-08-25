@@ -1,3 +1,33 @@
+## [v2.15.0] - 2026-08-25
+
+### Fixed
+- **The mesh tunnel could never come up on a stock Debian/Ubuntu host, and nothing said so.** The WireGuard *kernel module* ships with every supported kernel, so it is easy to conclude WireGuard "is present" — but `wg` and `wg-quick` come from a separate `wireguard-tools` package that a desktop image does not install, and `install.sh` neither installed nor checked for it.
+
+  The result was a failure with no visible symptom. The host enrolled into the mesh, was allocated an address, had its peer added at the site gateway, received its pushed peer config over WSS and wrote it to `/etc/wireguard/theta-mesh.conf`. Home detection worked; auto-VPN correctly fired on the first away network. Every layer reported success. The last step then said
+
+  ```
+  wg-quick up theta-mesh: exec: "wg-quick": executable file not found in $PATH
+  ```
+
+  once, into the journal — and the tunnel simply never existed. The tray's "connect" button showed that same raw exec error, which names no package and suggests no fix.
+
+  Three changes: `install.sh` installs `wireguard-tools` (apt/dnf/yum/pacman/zypper/apk) and warns loudly if it still is not there afterwards; the agent checks for the tools at startup and logs one actionable line naming the package for this distribution; and `ApplyWireGuard` refuses **before** writing the config, so a host with no way to run it is not left holding a peer config it cannot use.
+
+- **`install.sh --install-sssd` / `--ldap` did nothing.** `install_sssd_deps()` was defined at the top of the script and never called once — the flag set `INSTALL_SSSD=1` and nothing ever read it. A host installed with `--install-sssd` got no SSSD, no PAM integration and no indication that the flag had been ignored.
+
+- **Coming home tore down an exit chosen on purpose.** Auto-VPN tested home/away and nothing else, so a device routed through another site for geolocation lost that exit the moment it reached the home LAN — the one place the user had explicitly said what they wanted, and the only place it was ignored. The rule is now stated once, in `tunnelShouldBeUp`: away means up; a **remote** exit means up wherever you are; home with your own site (or nothing) selected means down. Selecting your own site is not an exit — it is what a device at home is already doing.
+
+- **A pushed peer config forced the tunnel up.** `wireguard_apply` ran `wg-quick up` unconditionally, so pushing a config to a host sitting at home raised the tunnel and the next home-monitor tick tore it straight back down. That flapped on every exit change, and it is why nothing could hand a device its config at enrolment. Storing and connecting are separate now (`PersistWireGuard` / `ApplyWireGuard`): the config always lands on disk, and it is raised only when it should be up. With `auto_vpn` off the user drives the tunnel — a push refreshes a live one and never raises one they left down.
+
+- **Re-applying a config over a live tunnel failed outright.** `wg-quick up` refuses an interface that already exists (and `/installtunnelservice` will not replace a running service), so the one case that re-pushes a config — changing your exit — was the case that could not work. Both platforms cycle the tunnel now.
+
+### Added
+- **`wireguard_ready` in the discovery payload**, alongside the existing capability flags (and `wireguard` itself, which was never reported at all). Enabled is a policy setting; ready is whether `wg-quick` is actually installed. They came apart silently before — a host could be enrolled in the mesh, with a live peer at the gateway, and have no way to bring the interface up.
+- **`siteId` / `exitSiteId` on `wireguard_apply`.** The Directory already knows both; sending them with the config means the agent decides whether the tunnel should be up without a round trip, and without acting on a cached exit list. `PROTOCOL.md` §4.3.1.
+
+### Documentation
+- `PROTOCOL.md` §4.3 records that storing a config and connecting are separate decisions, and §4.3.1 documents the home/away/exit table the tunnel state is derived from.
+
 ## [v2.14.0] - 2026-08-25
 
 ### Added
