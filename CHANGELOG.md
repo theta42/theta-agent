@@ -1,3 +1,12 @@
+## [v2.16.0] - 2026-08-26
+
+### Fixed
+- **Self-update was broken on every platform and failed silently.** `downloadBinary` removed its own temp file before `ApplyUpdate` could install it (`defer os.Remove(tmpPath)`), so the downloaded-and-verified binary was deleted a moment after it was fetched. Linux's `os.Rename` and Windows's staged-`.new` helper swap both received a path that no longer existed — self-update could never actually replace the running binary. The caller now owns the temp file. Regression-tested (`TestDownloadBinaryKeepsTempFileForCaller`).
+- **`update_binary` was gated behind the `arbitrary_bash` capability.** A host with `arbitrary_bash: false` — the security-conscious default — could not be self-updated from the Directory even though it held the Ed25519 signing key that already verifies the command. Self-update is its own signed high-risk operation; the arbitrary_bash coupling is gone. Regression-tested (`TestUpdateBinaryNotGatedOnArbitraryBash`).
+
+### Changed
+- **`theta-agent update` now sources the binary from THIS host's Theta Directory** (`/resources/theta-agent/<artifact>`), not from GitHub releases, and verifies it against the directory's `SHA256SUMS` manifest before staging. The old path downloaded straight from GitHub with no integrity check at all. This matches the air-gap design (DESIGN-WINDOWS.md §9/§10): the SSO mirrors release artifacts into its resource tree and self-update stays on the LAN. An unenrolled host with no `server_url` now fails loudly instead of fetching from an external host.
+
 ## [v2.15.0] - 2026-08-25
 
 ### Fixed

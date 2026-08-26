@@ -113,10 +113,18 @@ func runSelfUpdate(args []string) {
 	if err != nil {
 		log.Fatalf("[!] Update failed: cannot read config from %s: %v", configPath, err)
 	}
-	_ = cm.Get()
+	cfg := cm.Get()
 
-	// Binaries are GitHub release artifacts (DESIGN-WINDOWS.md §9); nothing
-	// binary is served from the SSO's /resources anymore.
+	// The binary comes from THIS host's Theta Directory, not from GitHub
+	// (DESIGN-WINDOWS.md §9/§10): the SSO mirrors the release artifacts into
+	// its /resources/theta-agent/ tree, so self-update works over the LAN and
+	// inside an air-gap. The SSO never holds a token-less public download, so
+	// an unenrolled host with no server_url simply cannot self-update.
+	base := httpBaseURL(cfg.ServerURL)
+	if base == "" {
+		log.Fatalf("[!] Update failed: server_url is empty in %s -- nothing to update from", configPath)
+	}
+
 	arch := "amd64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -126,36 +134,34 @@ func runSelfUpdate(args []string) {
 		ext = ".exe"
 	}
 	artifact := fmt.Sprintf("theta-agent-%s-%s%s", runtime.GOOS, arch, ext)
-	downloadURL := releaseAssetURL(artifact)
-	log.Printf("[+] Downloading latest Theta Agent binary from %s...", downloadURL)
+	manifestURL := base + "/resources/theta-agent/SHA256SUMS"
+	downloadURL := base + "/resources/theta-agent/" + artifact
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(downloadURL)
-	if err != nil || resp.StatusCode != 200 {
-		log.Fatalf("[!] Failed to download update binary from %s (HTTP %d): %v", downloadURL, resp.StatusCode, err)
+	// The directory pins each artifact's SHA-256 in a SHA256SUMS manifest; we
+	// fetch the expected hash first so downloadBinary can reject a corrupt or
+	// tampered download before anything is staged. This closes the old path,
+	// which pulled the binary straight from GitHub with no integrity check at
+	// all.
+	expected, err := fetchManifestSHA(manifestURL, artifact)
+	if err != nil {
+		log.Fatalf("[!] Update failed: %v", err)
 	}
-	defer resp.Body.Close()
+	log.Printf("[+] Downloading Theta Agent binary for %s from the directory...", artifact)
+
+	tmpPath, err := downloadBinary(downloadURL, expected)
+	if err != nil {
+		log.Fatalf("[!] Update failed: %v", err)
+	}
 
 	binPath := "/usr/local/bin/theta-agent"
 	if selfPath, err := os.Executable(); err == nil && selfPath != "" {
 		binPath = selfPath
 	}
 
-	tmpPath := binPath + ".tmp"
-	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
-		log.Fatalf("[!] Cannot write binary to %s: %v", tmpPath, err)
-	}
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		out.Close()
-		log.Fatalf("[!] Error writing binary update: %v", err)
-	}
-	out.Close()
-
 	// Platform-specific install: unix renames over the running binary; Windows
 	// must stage <self>.new and hand the swap to the session helper because
 	// the service holds the exe image locked (update_windows.go).
-	restarted, err := swapUpdatedBinary(cm.Get(), tmpPath, binPath)
+	restarted, err := swapUpdatedBinary(cfg, tmpPath, binPath)
 	if err != nil {
 		os.Remove(tmpPath)
 		log.Fatalf("[!] Cannot install updated binary at %s: %v", binPath, err)
@@ -167,6 +173,38 @@ func runSelfUpdate(args []string) {
 		restartAffectedServices(exec)
 	}
 	os.Exit(0)
+}
+
+// fetchManifestSHA reads a SHA256SUMS manifest (one `<hash>  <filename>` line
+// per artifact, as the SSO serves it) and returns the hash for artifact.
+func fetchManifestSHA(manifestURL, artifact string) (string, error) {
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Get(manifestURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch checksum manifest from %s: %w", manifestURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch checksum manifest from %s: HTTP %s", manifestURL, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read checksum manifest: %w", err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[1] == artifact {
+			return fields[0], nil
+		}
+	}
+	return "", fmt.Errorf("no checksum for %s in %s (is the artifact mirrored there?)", artifact, manifestURL)
 }
 
 func runReinitialize(args []string) {
@@ -260,13 +298,6 @@ func runDiscover(args []string) {
 		fmt.Printf("      version: %s\n", s.Version)
 	}
 	fmt.Println()
-}
-
-// releaseAssetURL returns the GitHub release download URL for a theta-agent
-// artifact (e.g. "theta-agent-linux-amd64"). Binaries are built by CI and
-// attached to the release; nothing binary lives in the repos (DESIGN-WINDOWS.md §9).
-func releaseAssetURL(artifact string) string {
-	return "https://github.com/theta42/theta-agent/releases/latest/download/" + artifact
 }
 
 func restartAffectedServices(exec Executor) {

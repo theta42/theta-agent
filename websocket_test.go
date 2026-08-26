@@ -2,8 +2,12 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -415,3 +419,122 @@ func TestCanonicalizeMatchesServerForm(t *testing.T) {
 // boolPtr is for the capability fields that are pointers so an absent key is
 // distinguishable from an explicit false.
 func boolPtr(b bool) *bool { return &b }
+
+// Regression: downloadBinary used to `defer os.Remove(tmpPath)`, deleting the
+// verified download before ApplyUpdate could rename it over the running binary
+// -- which silently broke self-update on every platform. The caller owns the
+// returned temp file, so it must still exist (and hold the bytes) on return.
+func TestDownloadBinaryKeepsTempFileForCaller(t *testing.T) {
+	body := []byte("#!/bin/sh\necho updated agent\n")
+	sum := fmt.Sprintf("%x", sha256.Sum256(body))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	path, err := downloadBinary(srv.URL, sum)
+	if err != nil {
+		t.Fatalf("downloadBinary: %v", err)
+	}
+	defer os.Remove(path)
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("temp file was removed before the caller could use it (self-update would fail): %v", err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("temp file content mismatch:\n got %q\nwant %q", got, body)
+	}
+}
+
+func TestDownloadBinaryRejectsMismatchedChecksum(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("corrupt payload"))
+	}))
+	defer srv.Close()
+
+	if _, err := downloadBinary(srv.URL, "0bad"); err == nil {
+		t.Fatal("downloadBinary accepted a payload whose checksum did not match")
+	}
+}
+
+func TestFetchManifestSHA(t *testing.T) {
+	manifest := "aa11  theta-agent-linux-amd64\nbb22  theta-agent-windows-amd64.exe\ncc33  theta-agent-linux-arm64\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(manifest))
+	}))
+	defer srv.Close()
+
+	hash, err := fetchManifestSHA(srv.URL+"/SHA256SUMS", "theta-agent-windows-amd64.exe")
+	if err != nil {
+		t.Fatalf("fetchManifestSHA: %v", err)
+	}
+	if hash != "bb22" {
+		t.Errorf("fetchManifestSHA = %q, want bb22", hash)
+	}
+
+	if _, err := fetchManifestSHA(srv.URL+"/SHA256SUMS", "theta-agent-darwin-arm64"); err == nil {
+		t.Error("fetchManifestSHA should error when the artifact is absent from the manifest")
+	}
+}
+
+// updateStub is a linuxPlatformOps whose ApplyUpdate/SelfRestart are inert, so
+// a dispatch test can exercise the update_binary gate without downloading over
+// the test's own executable.
+type updateStub struct {
+	*linuxPlatformOps
+	applied bool
+}
+
+func (u *updateStub) ApplyUpdate(url, sum string) error { u.applied = true; return nil }
+func (u *updateStub) SelfRestart()                      {}
+
+// Regression: update_binary used to be gated behind the arbitrary_bash
+// capability, so a host with `arbitrary_bash: false` could never self-update
+// from the directory even though it held the signing key. It is now gated on
+// the Ed25519 signature alone.
+func TestUpdateBinaryNotGatedOnArbitraryBash(t *testing.T) {
+	body := []byte("theta-agent v2")
+	sum := fmt.Sprintf("%x", sha256.Sum256(body))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	prevOps := defaultPlatformOps
+	stub := &updateStub{linuxPlatformOps: &linuxPlatformOps{exec: &MockExecutor{}, tunnelName: "theta-mesh"}}
+	defaultPlatformOps = stub
+	defer func() { defaultPlatformOps = prevOps }()
+
+	cfg := &Config{
+		PublicKey: testPubKeyB64(),
+		Capabilities: Capabilities{
+			ArbitraryBash: false, // the host refuses raw script execution
+		},
+	}
+	cm := &ConfigManager{current: cfg}
+	mockConn := &MockConn{}
+	msg := WSMessage{
+		Type: "update_binary",
+		Payload: sign(t, map[string]interface{}{
+			"url":    srv.URL,
+			"sha256": sum,
+		}),
+	}
+	handleCommand(cm, msg, mockConn, &MockExecutor{}, nil)
+
+	if len(mockConn.Messages) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(mockConn.Messages))
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(mockConn.Messages[0], &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Fatalf("update_binary with arbitrary_bash:false returned status %q, want ok (message %q)", resp["status"], resp["message"])
+	}
+	if !stub.applied {
+		t.Error("update_binary was not applied")
+	}
+}

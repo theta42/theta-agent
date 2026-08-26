@@ -238,7 +238,11 @@ FLAGS
 	{
 		Name:    "update",
 		Summary: "Self-update this binary from the Directory",
-		Detail: `Download the current release binary for this platform and replace this one.
+		Detail: `Download the release binary for this platform from this host's Theta
+Directory (/resources/theta-agent), verify it against the directory's
+SHA256SUMS manifest, and replace this binary. Works over the LAN and inside
+an air-gap; the directory must have the artifact mirrored into its
+/resources/theta-agent tree (DESIGN-WINDOWS.md).
 
   theta-agent update`,
 	},

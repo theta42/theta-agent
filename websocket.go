@@ -336,10 +336,13 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", "signature verification failed")
 			return
 		}
-		if !cfg.Capabilities.ArbitraryBash {
-			sendResponse("error", "update capability disabled")
-			return
-		}
+		// Self-update is its own signed high-risk operation, independent of
+		// arbitrary_bash. It used to be gated behind ArbitraryBash, which meant
+		// a host with `arbitrary_bash: false` (the security-conscious default)
+		// could never be self-updated from the directory even though the update
+		// is verified by the Ed25519 signature above. Dropping that coupling
+		// makes update_binary available to any host that holds the directory's
+		// public key, matching the README's separation of the two operations.
 
 		urlStr, _ := msg.Payload["url"].(string)
 		checksum, _ := msg.Payload["sha256"].(string)
@@ -751,7 +754,12 @@ func downloadBinary(downloadURL string, expectedSHA256 string) (string, error) {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+
+	// The caller OWNS the returned temp file and is expected to move it into
+	// place (ApplyUpdate renames it over the running binary, or stages it as
+	// <self>.new for the helper swap). It must NOT be removed here: a deferred
+	// os.Remove once deleted the verified download before ApplyUpdate could
+	// install it, silently breaking self-update on every platform.
 
 	hasher := sha256.New()
 	writer := io.MultiWriter(tmpFile, hasher)
