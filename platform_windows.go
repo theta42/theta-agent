@@ -174,7 +174,7 @@ func (p *windowsPlatformOps) ApplyUpdate(downloadURL, checksum string) error {
 		return fmt.Errorf("failed to resolve current binary path: %w", err)
 	}
 
-	tmpPath, err := downloadBinary(downloadURL, checksum)
+	tmpPath, err := downloadBinary(downloadURL, checksum, filepath.Dir(selfPath))
 	if err != nil {
 		return err
 	}

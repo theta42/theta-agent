@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -148,14 +149,16 @@ func runSelfUpdate(args []string) {
 	}
 	log.Printf("[+] Downloading Theta Agent binary for %s from the directory...", artifact)
 
-	tmpPath, err := downloadBinary(downloadURL, expected)
-	if err != nil {
-		log.Fatalf("[!] Update failed: %v", err)
-	}
-
 	binPath := "/usr/local/bin/theta-agent"
 	if selfPath, err := os.Executable(); err == nil && selfPath != "" {
 		binPath = selfPath
+	}
+
+	// Stage the download next to the destination binary so the install rename
+	// stays on one filesystem (a /tmp temp file made it fail with EXDEV).
+	tmpPath, err := downloadBinary(downloadURL, expected, filepath.Dir(binPath))
+	if err != nil {
+		log.Fatalf("[!] Update failed: %v", err)
 	}
 
 	// Platform-specific install: unix renames over the running binary; Windows

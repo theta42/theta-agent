@@ -740,10 +740,13 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 }
 
 // downloadBinary fetches the new binary, verifies its SHA-256, and returns the
-// path of a temp file holding it. The platform's ApplyUpdate decides how to
-// install it (Linux renames over the running exe; Windows stages a `.new` and
-// swaps via the helper once the service stops).
-func downloadBinary(downloadURL string, expectedSHA256 string) (string, error) {
+// path of a temp file holding it. The temp file is created in dir — the
+// destination binary's directory — so the final rename stays on one
+// filesystem and remains atomic (a temp file in /tmp, often a tmpfs, made the
+// install rename fail with EXDEV on Linux). The platform's ApplyUpdate decides
+// how to install it (Linux renames over the running exe; Windows stages a
+// `.new` and swaps via the helper once the service stops).
+func downloadBinary(downloadURL string, expectedSHA256 string, dir string) (string, error) {
 	resp, err := http.Get(downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("http fetch failed: %w", err)
@@ -754,7 +757,7 @@ func downloadBinary(downloadURL string, expectedSHA256 string) (string, error) {
 		return "", fmt.Errorf("unexpected http status: %s", resp.Status)
 	}
 
-	tmpFile, err := os.CreateTemp("", "theta-agent-update-*")
+	tmpFile, err := os.CreateTemp(dir, "theta-agent-update-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}

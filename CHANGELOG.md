@@ -1,3 +1,13 @@
+## [v2.18.0] - 2026-08-27
+### Changed
+- **Local discovery is now opt-in** (`local_discovery: true` in agent.yml). The /etc/hosts override is a system-wide change and a wrong one breaks every client on the machine, not just the agent; it used to default on.
+- **Local discovery only overrides https directories.** The certificate check is what proves the LAN address actually serves the hostname; a plain-http directory has no such proof and is never overridden (the shipped version exempted http and committed unverified overrides).
+- **Discovery reports the host's primary MAC** (`mac_address`), so the directory can build a stable identity that survives hostname changes and IP churn.
+
+
+### Fixed
+- **`theta-agent update` failed with "invalid cross-device link" on Linux.** The download was staged in `/tmp` (often a tmpfs) and the install renamed it over the running binary on another filesystem — `os.Rename` cannot cross devices, so every self-update on such hosts died at the install step. The download is now staged in the destination binary's directory, keeping the rename atomic on one filesystem.
+
 ## [v2.17.0] - 2026-08-27
 
 ### Added

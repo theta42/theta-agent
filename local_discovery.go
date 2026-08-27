@@ -32,11 +32,17 @@ const mdnsLookupTimeout = 3 * time.Second
 // StartLocalDiscovery runs until the process exits. No-op (logs once, then
 // returns) if the target host can't be determined -- callers just
 // `go StartLocalDiscovery(cm)` unconditionally.
+//
+// Opt-in: the override is a system-wide /etc/hosts change, and a wrong one
+// breaks every client on the machine, not just the agent. It used to default
+// on, and a plain-http directory (no certificate to verify) committed the
+// override unconditionally — the exact failure that took down whole hosts.
+// Set `local_discovery: true` in agent.yml to enable.
 func localDiscoveryEnabled(cfg *Config) bool {
 	if cfg.LocalDiscovery != nil {
 		return *cfg.LocalDiscovery
 	}
-	return true
+	return false
 }
 
 func StartLocalDiscovery(cm *ConfigManager) {

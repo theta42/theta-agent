@@ -277,11 +277,6 @@ func writeSSSDSshConf(exec Executor) {
 }
 
 func (p *linuxPlatformOps) ApplyUpdate(downloadURL, checksum string) error {
-	tmpPath, err := downloadBinary(downloadURL, checksum)
-	if err != nil {
-		return err
-	}
-
 	selfPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to resolve current binary path: %w", err)
@@ -289,6 +284,13 @@ func (p *linuxPlatformOps) ApplyUpdate(downloadURL, checksum string) error {
 	if resolved, err := filepath.EvalSymlinks(selfPath); err == nil {
 		selfPath = resolved
 	}
+
+	// Stage next to the destination so the rename stays on one filesystem.
+	tmpPath, err := downloadBinary(downloadURL, checksum, filepath.Dir(selfPath))
+	if err != nil {
+		return err
+	}
+
 	if err := os.Rename(tmpPath, selfPath); err != nil {
 		return fmt.Errorf("failed to replace binary: %w", err)
 	}

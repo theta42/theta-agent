@@ -91,11 +91,14 @@ func lanCertValidFor(host, ip string) bool {
 }
 
 // overrideIsSafe decides whether pointing host at ip is safe to commit.
-// Non-TLS directories are exempt (nothing to break); everything else must
-// verify.
+// Only TLS directories are ever overridden: the certificate check is what
+// proves the LAN address actually serves this hostname, and a plain-http
+// directory has no such proof — committing the override would repoint
+// system-wide DNS at an unverified address. (The shipped version exempted
+// http and broke whole hosts.)
 func overrideIsSafe(serverURL, host, ip string) bool {
 	if !serverURLUsesTLS(serverURL) {
-		return true
+		return false
 	}
 	return lanCertValidFor(host, ip)
 }
