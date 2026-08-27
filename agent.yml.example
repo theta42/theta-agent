@@ -139,6 +139,9 @@ capabilities:
   arbitrary_bash: false
 
 # mDNS local-discovery: when a theta-gateway on the same LAN announces it fronts
-# this agent's server_url host, redirect DNS + routing to the local IP. This is
-# always safe because TLS validation is unchanged; set false to disable it.
-local_discovery: true
+# this agent's server_url host, redirect DNS + routing to the local IP. The
+# override is a system-wide /etc/hosts change, so it is OFF by default and only
+# ever applied to https directories whose certificate the LAN address actually
+# serves (a plain-http directory cannot be verified and is never overridden).
+# Set true to enable.
+local_discovery: false

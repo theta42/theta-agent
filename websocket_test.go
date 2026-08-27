@@ -433,7 +433,7 @@ func TestDownloadBinaryKeepsTempFileForCaller(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	path, err := downloadBinary(srv.URL, sum)
+	path, err := downloadBinary(srv.URL, sum, t.TempDir())
 	if err != nil {
 		t.Fatalf("downloadBinary: %v", err)
 	}
@@ -454,8 +454,34 @@ func TestDownloadBinaryRejectsMismatchedChecksum(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := downloadBinary(srv.URL, "0bad"); err == nil {
+	if _, err := downloadBinary(srv.URL, "0bad", t.TempDir()); err == nil {
 		t.Fatal("downloadBinary accepted a payload whose checksum did not match")
+	}
+}
+
+// Regression: the temp file used to be created in /tmp (often a tmpfs), so the
+// install rename onto /usr/local/bin/theta-agent failed with EXDEV ("invalid
+// cross-device link") on Linux. The download must be staged in the requested
+// directory — the destination binary's directory — so the rename stays on one
+// filesystem.
+func TestDownloadBinaryStagesInRequestedDir(t *testing.T) {
+	body := []byte("#!/bin/sh\necho staged\n")
+	sum := fmt.Sprintf("%x", sha256.Sum256(body))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path, err := downloadBinary(srv.URL, sum, dir)
+	if err != nil {
+		t.Fatalf("downloadBinary: %v", err)
+	}
+	defer os.Remove(path)
+
+	if filepath.Dir(path) != dir {
+		t.Errorf("temp file staged in %q, want %q (cross-device rename would fail)", filepath.Dir(path), dir)
 	}
 }
 

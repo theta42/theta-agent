@@ -75,6 +75,9 @@ type DiscoveryData struct {
 	Hostname     string                 `json:"hostname"`
 	IPs          []string               `json:"ip_addresses"`
 	PublicIP     string                 `json:"public_ip"`
+	// MACAddress is the primary NIC's MAC, so the directory can build a stable
+	// identity for this host that survives hostname changes and IP churn.
+	MACAddress   string                 `json:"mac_address"`
 	OS           string                 `json:"os"`
 	Kernel       string                 `json:"kernel"`
 	CPUModel     string                 `json:"cpu"`
@@ -308,7 +311,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.17.0"
+const AgentVersion = "v2.18.0"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
@@ -343,6 +346,7 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		Hostname:    h.Hostname,
 		IPs:         ips,
 		PublicIP:    pubIP,
+		MACAddress:  collectPrimaryMAC(),
 		OS:          fmt.Sprintf("%s %s", h.OS, h.Platform),
 		Kernel:      h.KernelVersion,
 		CPUModel:    cpuDet.Model,
@@ -804,6 +808,30 @@ func collectIPs() []string {
 		}
 	}
 	return ips
+}
+
+// collectPrimaryMAC returns the MAC of the first non-virtual, non-loopback
+// interface that has one — the same interface set collectIPs reports, so the
+// MAC and the IPs describe the same NIC. The directory uses it as a stable
+// identity key for the host.
+func collectPrimaryMAC() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if isVirtualInterfaceName(iface.Name) {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if len(iface.HardwareAddr) == 0 {
+			continue
+		}
+		return iface.HardwareAddr.String()
+	}
+	return ""
 }
 
 func equalSlices(a, b []string) bool {

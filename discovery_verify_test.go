@@ -5,9 +5,11 @@ import (
 	"testing"
 )
 
-// A plain-http directory has no certificate the override could break, so the
-// check must not gate it (and must not dial).
-func TestOverrideIsSafeSkipsVerificationForNonTLS(t *testing.T) {
+// A plain-http directory has no certificate to prove the LAN address actually
+// serves this hostname, so the override must be REFUSED (and must not dial):
+// committing it would repoint system-wide DNS at an unverified address. The
+// shipped version exempted http and broke whole hosts.
+func TestOverrideIsRefusedForNonTLS(t *testing.T) {
 	prev := verifyTLSDial
 	dialed := false
 	verifyTLSDial = func(addr, serverName string) error {
@@ -17,8 +19,8 @@ func TestOverrideIsSafeSkipsVerificationForNonTLS(t *testing.T) {
 	defer func() { verifyTLSDial = prev }()
 
 	for _, u := range []string{"http://sso.example.com", "ws://sso.example.com"} {
-		if !overrideIsSafe(u, "sso.example.com", "192.168.1.5") {
-			t.Fatalf("%s: a non-TLS directory has no certificate to break", u)
+		if overrideIsSafe(u, "sso.example.com", "192.168.1.5") {
+			t.Fatalf("%s: a non-TLS directory has no certificate to verify, so the override must be refused", u)
 		}
 	}
 	if dialed {
