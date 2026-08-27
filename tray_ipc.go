@@ -47,15 +47,16 @@ const (
 
 // TrayStatus is sent from the daemon to the tray on every state change.
 type TrayStatus struct {
-	Color         TrayColor `json:"color"`
-	Connected     bool      `json:"connected"`       // directory WebSocket is up
-	IsHome        bool      `json:"is_home"`         // public IP matches home site
-	VPNActive     bool      `json:"vpn_active"`      // WireGuard tunnel is up
-	AutoVPN       bool      `json:"auto_vpn"`        // auto-connect preference
-	SiteName      string    `json:"site_name"`       // configured site name
-	AgentPublicIP string    `json:"agent_public_ip"` // this agent's detected public IP
-	HomePublicIP  string    `json:"home_public_ip"`  // home site's public IP (from directory)
-	StatusText    string    `json:"status_text"`     // one-line human description
+	Color             TrayColor `json:"color"`
+	Connected         bool      `json:"connected"`       // directory WebSocket is up
+	IsHome            bool      `json:"is_home"`         // public IP matches home site
+	VPNActive         bool      `json:"vpn_active"`      // WireGuard tunnel is up
+	AutoVPN           bool      `json:"auto_vpn"`        // auto-connect preference
+	SiteName          string    `json:"site_name"`       // configured site name
+	AgentPublicIP     string    `json:"agent_public_ip"` // this agent's detected public IP
+	HomePublicIP      string    `json:"home_public_ip"`  // home site's public IP (from directory)
+	OrganizationName  string    `json:"organization_name"` // white-label name from directory
+	StatusText        string    `json:"status_text"`     // one-line human description
 
 	// ConfigPath is agent.yml's location on this host. The tray needs it
 	// because opening the file has to happen in the *tray's* process: the

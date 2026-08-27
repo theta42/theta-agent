@@ -66,16 +66,17 @@ const (
 )
 
 type TrayStatus struct {
-	Color         TrayColor `json:"color"`
-	Connected     bool      `json:"connected"`
-	IsHome        bool      `json:"is_home"`
-	VPNActive     bool      `json:"vpn_active"`
-	AutoVPN       bool      `json:"auto_vpn"`
-	SiteName      string    `json:"site_name"`
-	AgentPublicIP string    `json:"agent_public_ip"`
-	HomePublicIP  string    `json:"home_public_ip"`
-	StatusText    string    `json:"status_text"`
-	ConfigPath    string    `json:"config_path"`
+	Color            TrayColor `json:"color"`
+	Connected        bool      `json:"connected"`
+	IsHome           bool      `json:"is_home"`
+	VPNActive        bool      `json:"vpn_active"`
+	AutoVPN          bool      `json:"auto_vpn"`
+	SiteName         string    `json:"site_name"`
+	AgentPublicIP    string    `json:"agent_public_ip"`
+	HomePublicIP     string    `json:"home_public_ip"`
+	OrganizationName string    `json:"organization_name"`
+	StatusText       string    `json:"status_text"`
+	ConfigPath       string    `json:"config_path"`
 
 	Exits             []TrayExit `json:"exits,omitempty"`
 	CurrentExitSiteID *int       `json:"current_exit_site_id,omitempty"`
@@ -129,6 +130,13 @@ var (
 	currentStatus TrayStatus
 	ipcConn       net.Conn
 )
+
+func orgTitle() string {
+	if currentStatus.OrganizationName != "" {
+		return currentStatus.OrganizationName
+	}
+	return "Theta Agent"
+}
 
 func onReady() {
 	// Initial icon — red until we hear from the daemon.
@@ -304,7 +312,12 @@ func updateUI(s TrayStatus) {
 	if s.AgentPublicIP != "" {
 		tooltip += fmt.Sprintf(" (IP: %s)", s.AgentPublicIP)
 	}
-	systray.SetTooltip("Theta Agent — " + tooltip)
+	systray.SetTooltip(orgTitle() + " — " + tooltip)
+
+	// Update title if organization name changed.
+	if s.OrganizationName != "" {
+		systray.SetTitle(s.OrganizationName)
+	}
 
 	// Status menu item.
 	mStatus.SetTitle(s.StatusText)

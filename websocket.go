@@ -386,6 +386,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			SetHomeLanEndpoint(lanEndpoint)
 			log.Printf("[home-detect] home LAN endpoint: %s", lanEndpoint)
 		}
+		// White-label branding pushed by the directory.
+		if orgName, ok := msg.Payload["organization_name"].(string); ok && orgName != "" {
+			SetOrganizationName(orgName)
+			log.Printf("[branding] organization name: %s", orgName)
+		}
 		log.Printf("Received config payload: %v", msg.Payload)
 		sendResponse("ok", "Configuration received")
 	case "reboot":

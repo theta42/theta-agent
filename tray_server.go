@@ -203,16 +203,17 @@ func UpdateTrayStatus(connected, isHome bool, agentPublicIP, homePublicIP string
 	exits, currentExit := MeshExits()
 
 	globalTrayServer.Push(TrayStatus{
-		Color:         color,
-		Connected:     connected,
-		IsHome:        isHome,
-		VPNActive:     vpnActive,
-		AutoVPN:       autoVPN,
-		SiteName:      siteName,
-		AgentPublicIP: agentPublicIP,
-		HomePublicIP:  homePublicIP,
-		StatusText:    statusText,
-		ConfigPath:    defaultConfigPath(),
+		Color:            color,
+		Connected:        connected,
+		IsHome:           isHome,
+		VPNActive:        vpnActive,
+		AutoVPN:          autoVPN,
+		SiteName:         siteName,
+		AgentPublicIP:    agentPublicIP,
+		HomePublicIP:     homePublicIP,
+		OrganizationName: organizationName(),
+		StatusText:       statusText,
+		ConfigPath:       defaultConfigPath(),
 
 		Exits:             exits,
 		CurrentExitSiteID: currentExit,

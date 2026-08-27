@@ -1,3 +1,8 @@
+## [v2.17.0] - 2026-08-27
+
+### Added
+- **White-label branding from the directory.** The directory pushes `organization_name` in the WebSocket `config` frame on every agent connection. The agent displays it in the tray title/tooltip (replacing the hardcoded "Theta Agent") and applies it to the Windows logon tile (overriding `credential_provider_name` from `agent.yml`). Set once in the Directory Configuration UI, replicated to all sites, and every enrolled agent shows it.
+
 ## [v2.16.0] - 2026-08-26
 
 ### Fixed

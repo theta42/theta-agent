@@ -81,18 +81,24 @@ func credentialProviderDLL(root registry.Key, sub string) string {
 	return v
 }
 
-// maybeApplyCredentialProviderBranding applies credential_provider_name from
-// agent.yml, logging (but never failing) on problems.
+// maybeApplyCredentialProviderBranding applies the white-label tile name.
+// Server-pushed OrganizationName wins (kept in sync by the directory); it
+// overrides agent.yml's credential_provider_name. Falls back to the local
+// config, then does nothing if neither is set.
 func maybeApplyCredentialProviderBranding(cfg *Config) {
-	if cfg == nil || cfg.CredentialProviderName == "" {
+	name := organizationName()
+	if name == "" && cfg != nil {
+		name = cfg.CredentialProviderName
+	}
+	if name == "" {
 		return
 	}
-	if cfg.CredentialProviderLogo != "" {
+	if cfg != nil && cfg.CredentialProviderLogo != "" {
 		log.Printf("configure-login: credential_provider_logo is set but not supported until the provider ships a configurable bitmap (docs/WHITE_LABELING.md); ignoring")
 	}
-	if err := applyCredentialProviderBranding(cfg.CredentialProviderName); err != nil {
-		log.Printf("configure-login: white-label tile name %q: %v", cfg.CredentialProviderName, err)
+	if err := applyCredentialProviderBranding(name); err != nil {
+		log.Printf("configure-login: white-label tile name %q: %v", name, err)
 		return
 	}
-	log.Printf("configure-login: logon tile renamed to %q", cfg.CredentialProviderName)
+	log.Printf("configure-login: logon tile renamed to %q", name)
 }

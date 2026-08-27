@@ -98,6 +98,11 @@ type Config struct {
 	// config today — see docs/WHITE_LABELING.md for the supported paths.
 	CredentialProviderName string `yaml:"credential_provider_name"`
 	CredentialProviderLogo string `yaml:"credential_provider_logo"`
+
+	// OrganizationName is pushed by the directory via the WebSocket config
+	// frame. It overrides the hardcoded "Theta Agent" branding in the tray
+	// and Windows logon tile. Falls back to local config / defaults.
+	OrganizationName string
 }
 
 // DetectPublicIP reports whether the agent may perform external public-IP

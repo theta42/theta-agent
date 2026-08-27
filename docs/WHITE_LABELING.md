@@ -1,29 +1,33 @@
-# White-labeling the Windows logon tile
+# White-labeling the agent
 
-When theta-agent enables directory logon on Windows, it installs the bundled
-**OpenCredential** credential provider (a maintained BSD-3 fork of pGina). By
-default the tile on the Windows logon screen reads `OpenCredential <version>`.
-Deployments that brand the suite for their own organization can change both
-the **name** under the tile today and — with one extra build step — the
-**logo image**.
+theta-agent displays the organization name in three places: the Windows logon
+tile, the desktop tray icon, and the tray tooltip. The name comes from the
+directory (pushed via the WebSocket config frame) and can be overridden locally
+in `agent.yml`.
 
-## Tile name: supported out of the box
+## Organization name: pushed by the directory
 
-The text LogonUI shows under a credential-provider tile is simply the default
-value of the provider's registration key:
+The directory sends `organization_name` in the WebSocket `config` frame on every
+agent connection. The agent stores it and uses it for:
 
-```
-HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\<CLSID>
-```
+- **Windows logon tile** — replaces the `OpenCredential` display name
+- **Desktop tray** — the tooltip and title show the organization name
 
-theta-agent rewrites that value for the OpenCredential provider (located by its
-`InprocServer32` DLL path, not a hard-coded CLSID) whenever it seeds the
-provider configuration — i.e. on `theta-agent configure-login` and whenever the
-Directory pushes the LDAP config. Set in `agent.yml`:
+The directory's white-label name is set in the Directory admin UI
+(Configuration → Branding) and replicates to all spokes automatically. This is
+the preferred way to brand agents — set it once, every agent sees it.
+
+## Local override: agent.yml
+
+For standalone deployments or per-agent overrides, set in `agent.yml`:
 
 ```yaml
 credential_provider_name: "MyOrg Login"
 ```
+
+The directory-pushed name wins when both are set. Empty/absent falls back to the
+vendor default (`OpenCredential <version>` for the tile, `Theta Agent` for the
+tray).
 
 or at install time:
 
@@ -33,7 +37,6 @@ theta-agent-windows-amd64-setup.exe /SILENT /SERVER_URL=... /JOIN_KEY=... /CP_NA
 
 Notes:
 
-- Empty/absent keeps the vendor default (`OpenCredential <version>`).
 - Branding is re-applied after every seed because OpenCredential's own
   installer resets its registration key on upgrade.
 - A branding failure is logged but never blocks directory logon.

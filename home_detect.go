@@ -18,17 +18,18 @@ import (
 )
 
 var homeState struct {
-	mu            sync.RWMutex
-	agentPublicIP string
-	homePublicIP  string // set by directory config push
-	lanEndpoint   string // LAN-only endpoint pushed by the directory, if any
-	vpnActive     bool
-	autoVPN       bool
-	exits         []TrayExit // exits this device may choose (from the directory)
-	currentExit   *int       // nil = local breakout
-	homeSiteID    int        // this device's own site, from enrolment
-	isHome        bool       // last answer from detectHome
-	homeKnown     bool       // whether isHome has been computed even once
+	mu              sync.RWMutex
+	agentPublicIP   string
+	homePublicIP    string // set by directory config push
+	lanEndpoint     string // LAN-only endpoint pushed by the directory, if any
+	vpnActive       bool
+	autoVPN         bool
+	exits           []TrayExit // exits this device may choose (from the directory)
+	currentExit     *int       // nil = local breakout
+	homeSiteID      int        // this device's own site, from enrolment
+	isHome          bool       // last answer from detectHome
+	homeKnown       bool       // whether isHome has been computed even once
+	organizationName string   // white-label name pushed by the directory
 }
 
 // publicIPProviders are tried in order until one succeeds.
@@ -201,6 +202,20 @@ func AutoVPN() bool {
 	homeState.mu.RLock()
 	defer homeState.mu.RUnlock()
 	return homeState.autoVPN
+}
+
+// SetOrganizationName records the white-label name pushed by the directory.
+func SetOrganizationName(name string) {
+	homeState.mu.Lock()
+	homeState.organizationName = name
+	homeState.mu.Unlock()
+}
+
+// organizationName returns the cached white-label name (empty if unset).
+func organizationName() string {
+	homeState.mu.RLock()
+	defer homeState.mu.RUnlock()
+	return homeState.organizationName
 }
 
 // StartHomeMonitor periodically refreshes the agent's public IP and pushes
