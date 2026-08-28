@@ -88,6 +88,12 @@ type TrayCommand struct {
 	Value   bool   `json:"value"`   // used by set_auto_vpn
 	// used by set_exit; nil means local breakout (no exit)
 	SiteID *int `json:"site_id,omitempty"`
+	// used by register_service / unregister_service (sent by the CLI, not the
+	// tray): the service name and subtype to push over the daemon's own
+	// WebSocket, so the CLI never opens a competing connection that would
+	// supersede the daemon's (4002) and lose the frame.
+	Service string `json:"service,omitempty"`
+	Subtype string `json:"subtype,omitempty"`
 }
 
 func encodeTrayStatus(s TrayStatus) ([]byte, error) {

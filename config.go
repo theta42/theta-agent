@@ -180,14 +180,16 @@ func (cm *ConfigManager) Reload() error {
 // # THE BUG THIS EXISTS TO FIX
 //
 // `theta-agent register systemd <unit>` runs in its OWN process: it writes the
-// service into agent.yml and opens a one-shot WebSocket to tell the Directory.
-// The DAEMON, which is what actually reports telemetry, holds its config in
-// memory and had no reason to look at the file again -- so the newly registered
-// service never appeared in `services:` on the wire. The Directory duly created
-// the service resource from the registration frame, and then never received a
-// single status sample for it: a resource in the tree with permanently empty
-// live status, which is exactly what was reported. The same silence swallowed
-// `theta-agent config-set` and any hand edit until the service was restarted.
+// service into agent.yml and asks the running daemon to push the frame over
+// its own WebSocket (tray IPC; a one-shot connection only when the daemon is
+// down). The DAEMON, which is what actually reports telemetry, holds its
+// config in memory and had no reason to look at the file again -- so the newly
+// registered service never appeared in `services:` on the wire. The Directory
+// duly created the service resource from the registration frame, and then
+// never received a single status sample for it: a resource in the tree with
+// permanently empty live status, which is exactly what was reported. The same
+// silence swallowed `theta-agent config-set` and any hand edit until the
+// service was restarted.
 //
 // Compares size and mtime rather than hashing: agent.yml is written by rename,
 // so a change always moves both.

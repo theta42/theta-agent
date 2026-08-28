@@ -1,3 +1,7 @@
+## [v2.19.0] - 2026-08-28
+### Fixed
+- **`theta-agent register` reported failure for a successful registration.** The CLI pushed the frame over its own one-shot WebSocket, but the directory allows one connection per agent: the new connection superseded the daemon's (4002) and the daemon's immediate reconnect superseded the CLI's in turn, so the frame was lost and the command printed "could not notify Theta Directory" while the telemetry fallback quietly created the child 30s later. The CLI now hands the frame to the running daemon over the tray IPC socket and the daemon pushes it over its own stable connection — no competing connection, no race. A one-shot WebSocket remains as the fallback for hosts whose daemon is down.
+
 ## [v2.18.0] - 2026-08-27
 ### Changed
 - **Local discovery is now opt-in** (`local_discovery: true` in agent.yml). The /etc/hosts override is a system-wide change and a wrong one breaks every client on the machine, not just the agent; it used to default on.

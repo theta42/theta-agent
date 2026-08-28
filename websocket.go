@@ -177,6 +177,9 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// concurrent writer, and telemetry, heartbeat, the LDAP tunnel and command
 		// responses all write to the same socket.
 		sw := &safeWriter{c: c}
+		currentWriterMu.Lock()
+		currentWriter = sw
+		currentWriterMu.Unlock()
 
 		// Local LDAP byte-pump tunnel (DESIGN.md §4). The agent never parses LDAP;
 		// it forwards raw bytes to the SSO and writes the responses back.
@@ -244,6 +247,9 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 
 		// Cleanup on disconnect
 		wsConnected.Store(false)
+		currentWriterMu.Lock()
+		currentWriter = nil
+		currentWriterMu.Unlock()
 		close(stopCh)
 		c.Close()
 
@@ -737,6 +743,37 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		log.Printf("Unknown command type: %s", msg.Type)
 		sendResponse("error", "unknown command type")
 	}
+}
+
+// pushServiceFrame sends a register_service / unregister_service frame over
+// the daemon's own WebSocket connection. Called from the tray IPC server when
+// `theta-agent register/unregister` asks the daemon to push the frame for it.
+//
+// The CLI used to open its own one-shot WebSocket to the directory. The
+// directory allows one connection per agent, so the new connection superseded
+// the daemon's (4002) and the daemon's immediate reconnect superseded the
+// CLI's in turn — the frame was lost and registration reported failure while
+// actually succeeding via the telemetry fallback. Pushing over the daemon's
+// stable connection removes the race entirely.
+func pushServiceFrame(msgType, service, subtype string) error {
+	currentWriterMu.RLock()
+	w := currentWriter
+	currentWriterMu.RUnlock()
+	if w == nil {
+		return fmt.Errorf("no live WebSocket connection to the directory")
+	}
+	payload := map[string]interface{}{
+		"service": service,
+	}
+	if subtype != "" {
+		payload["subtype"] = subtype
+	}
+	msg := WSMessage{Type: msgType, Payload: payload}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return w.WriteMessage(websocket.TextMessage, data)
 }
 
 // downloadBinary fetches the new binary, verifies its SHA-256, and returns the
