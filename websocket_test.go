@@ -78,6 +78,76 @@ func (m *MockExecutor) ReadFile(path string) ([]byte, error) {
 	return []byte("mock file content"), nil
 }
 
+// pushServiceFrame must send the frame over the daemon's own connection with
+// the exact wire shape the directory expects (type + payload.service/subtype).
+func TestPushServiceFrameSendsOverCurrentWriter(t *testing.T) {
+	conn := &MockConn{}
+	currentWriterMu.Lock()
+	currentWriter = conn
+	currentWriterMu.Unlock()
+	defer func() {
+		currentWriterMu.Lock()
+		currentWriter = nil
+		currentWriterMu.Unlock()
+	}()
+
+	if err := pushServiceFrame("register_service", "emby-server", "systemd"); err != nil {
+		t.Fatalf("pushServiceFrame: %v", err)
+	}
+	if len(conn.Messages) != 1 {
+		t.Fatalf("got %d messages, want 1", len(conn.Messages))
+	}
+	var msg WSMessage
+	if err := json.Unmarshal(conn.Messages[0], &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != "register_service" {
+		t.Fatalf("type = %q, want register_service", msg.Type)
+	}
+	if msg.Payload["service"] != "emby-server" || msg.Payload["subtype"] != "systemd" {
+		t.Fatalf("payload = %v, want service=emby-server subtype=systemd", msg.Payload)
+	}
+}
+
+// With no live connection the daemon cannot push; the CLI must know so it can
+// fall back to its one-shot WebSocket.
+func TestPushServiceFrameFailsWithoutConnection(t *testing.T) {
+	currentWriterMu.Lock()
+	currentWriter = nil
+	currentWriterMu.Unlock()
+
+	if err := pushServiceFrame("register_service", "emby-server", "systemd"); err == nil {
+		t.Fatal("expected an error with no live connection")
+	}
+}
+
+// unregister_service must carry the same shape (subtype omitted when empty).
+func TestPushServiceFrameUnregister(t *testing.T) {
+	conn := &MockConn{}
+	currentWriterMu.Lock()
+	currentWriter = conn
+	currentWriterMu.Unlock()
+	defer func() {
+		currentWriterMu.Lock()
+		currentWriter = nil
+		currentWriterMu.Unlock()
+	}()
+
+	if err := pushServiceFrame("unregister_service", "emby-server", ""); err != nil {
+		t.Fatalf("pushServiceFrame: %v", err)
+	}
+	var msg WSMessage
+	if err := json.Unmarshal(conn.Messages[0], &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != "unregister_service" {
+		t.Fatalf("type = %q, want unregister_service", msg.Type)
+	}
+	if _, ok := msg.Payload["subtype"]; ok {
+		t.Fatalf("unregister payload must not carry subtype: %v", msg.Payload)
+	}
+}
+
 func TestHandleCommand(t *testing.T) {
 	// These cases are about command dispatch, not about whether the machine
 	// running the tests happens to have wireguard-tools installed -- so state

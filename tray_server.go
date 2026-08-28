@@ -139,6 +139,20 @@ func (ts *trayServer) handleCommand(cmd TrayCommand) {
 		// Refresh so the tray's checkmark reflects what the directory now
 		// holds, rather than what we optimistically assumed.
 		refreshMeshExits(cfg)
+	case "register_service", "unregister_service":
+		// Sent by `theta-agent register/unregister` (the CLI), not the tray.
+		// The CLI writes agent.yml itself and asks the daemon to push the
+		// frame over its own stable WebSocket -- opening a second connection
+		// from the CLI would supersede the daemon's (4002) and lose the
+		// frame, which is exactly the race that made registration report
+		// failure while actually succeeding via the telemetry fallback.
+		if cmd.Service == "" {
+			log.Printf("[tray-ipc] %s: missing service name", cmd.Command)
+			return
+		}
+		if err := pushServiceFrame(cmd.Command, cmd.Service, cmd.Subtype); err != nil {
+			log.Printf("[tray-ipc] %s %q failed: %v", cmd.Command, cmd.Service, err)
+		}
 	case "open_config":
 		// Kept only for trays older than the ConfigPath field. This process
 		// cannot open a window: on Linux it is a root systemd service with no
@@ -220,8 +234,11 @@ func UpdateTrayStatus(connected, isHome bool, agentPublicIP, homePublicIP string
 	})
 }
 
-// sendTrayCommand sends a single JSON command to the daemon from the tray process.
-func sendTrayCommand(cmd TrayCommand) error {
+// sendTrayCommand sends a single JSON command to the daemon from the tray
+// process. A var so tests can stub it: the CLI's pushServiceRegistration uses
+// it to hand register/unregister frames to the daemon, and the fallback path
+// must be testable without a real socket.
+var sendTrayCommand = func(cmd TrayCommand) error {
 	conn, err := net.Dial("unix", TraySocket)
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon IPC socket: %w", err)

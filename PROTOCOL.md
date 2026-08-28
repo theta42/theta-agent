@@ -166,10 +166,12 @@ resource of the host and its health.
 
 **The daemon re-reads `agent.yml` before each telemetry frame** (since v2.14.0).
 `theta-agent register` runs in its own process: it writes the service into
-`agent.yml` and notifies the directory over a one-shot socket. The daemon held
-its configuration in memory, so a just-registered service never appeared in
-`services:` on the wire — the directory created the child resource from the
-registration frame and then received no status sample for it, indefinitely.
+`agent.yml` and asks the running daemon to push the frame over its own
+WebSocket (tray IPC; a one-shot connection only when the daemon is down). The
+daemon held its configuration in memory, so a just-registered service never
+appeared in `services:` on the wire — the directory created the child resource
+from the registration frame and then received no status sample for it,
+indefinitely.
 
 ### 3.6 Service Registration (Agent → Server)
 
@@ -498,6 +500,7 @@ Pushed on every state change.
 | `vpn_connect` / `vpn_disconnect` | — | Brings the tunnel up or down now. |
 | `set_exit` | `site_id` (`*int`) | Routes this device through a site; **`null`/absent means local breakout**. |
 | `reinit` | — | Blanks enrolment so the agent re-enrols on reconnect. |
+| `register_service` / `unregister_service` | `service` (string), `subtype` (string, optional) | Sent by the **CLI** (`theta-agent register/unregister`), not the tray: the daemon pushes the frame over its own WebSocket. The CLI never opens a competing connection — the directory allows one connection per agent, so a second one supersedes the daemon's (4002) and the frame is lost. |
 | `open_config` | — | **Deprecated.** See §7.3. |
 
 `site_id` is a pointer precisely because `0` is a plausible site-id shape and

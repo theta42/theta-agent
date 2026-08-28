@@ -64,6 +64,25 @@ func TestTrayCommandCarriesSiteID(t *testing.T) {
 	}
 }
 
+// The CLI's register/unregister hand the frame to the daemon over the same
+// socket, so the service fields must survive the wire under the names the
+// daemon's handler reads.
+func TestTrayCommandServiceWireNames(t *testing.T) {
+	b, _ := json.Marshal(TrayCommand{Command: "register_service", Service: "emby-server", Subtype: "systemd"})
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"command", "service", "subtype"} {
+		if _, ok := m[key]; !ok {
+			t.Fatalf("TrayCommand is missing wire field %q: %s", key, b)
+		}
+	}
+	if m["service"] != "emby-server" || m["subtype"] != "systemd" {
+		t.Fatalf("service fields did not survive the wire: %s", b)
+	}
+}
+
 // An older tray sends no site_id at all; that must mean local breakout, not a
 // decode error.
 func TestTrayCommandFromLegacyTray(t *testing.T) {

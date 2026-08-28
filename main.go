@@ -27,6 +27,16 @@ var (
 // enrollment into the live config file. Set once in runAgent.
 var currentCM *ConfigManager
 
+// currentWriter is the safe writer for the live WebSocket connection, set by
+// connectWebSocket on connect and cleared on disconnect. The tray IPC server
+// uses it to push register_service/unregister_service frames over the daemon's
+// own connection (the CLI must not open a competing one -- it would supersede
+// the daemon's and lose the frame). Guarded by currentWriterMu.
+var (
+	currentWriterMu sync.RWMutex
+	currentWriter   MessageWriter
+)
+
 // stopAgent signals the running agent to shut down. Idempotent.
 func stopAgent() {
 	agentStopOnce.Do(func() { close(agentStopCh) })

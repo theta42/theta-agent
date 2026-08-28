@@ -396,9 +396,9 @@ func validServiceType(subtype string) bool {
 }
 
 // registerService validates the unit/container/process, updates agent.yml, and
-// pushes a one-shot register_service / unregister_service message over a
-// short-lived WebSocket so the directory reflects the change immediately
-// (idempotent -- safe to re-run).
+// tells the directory about the change immediately (idempotent -- safe to
+// re-run). The frame is pushed by the running daemon over its own WebSocket
+// when it is up, else by a one-shot connection from this process.
 func registerService(subtype, name string, remove bool) {
 	exec := &SystemExecutor{}
 
@@ -442,10 +442,19 @@ func registerService(subtype, name string, remove bool) {
 	os.Exit(0)
 }
 
-// pushServiceRegistration opens a one-shot WebSocket to the directory, sends the
-// registration message, waits for the response, and closes. It reuses the same
-// enrollment credential and signing channel as the daemon, so no separate secret
-// is needed.
+// pushServiceRegistration tells the directory about a registration change.
+//
+// It first asks the RUNNING DAEMON to push the frame over its own stable
+// WebSocket (tray IPC socket). The CLI used to open its own one-shot WebSocket
+// to the directory, but the directory allows one connection per agent: the new
+// connection superseded the daemon's (4002) and the daemon's immediate
+// reconnect superseded the CLI's in turn, so the frame was lost and
+// registration reported failure while actually succeeding via the telemetry
+// fallback. Pushing over the daemon's connection removes the race.
+//
+// When the daemon is not running (no IPC socket, or it has no live connection)
+// the CLI falls back to a one-shot WebSocket, so registration still works on a
+// host whose service is down.
 func pushServiceRegistration(cm *ConfigManager, name, subtype string, remove bool) error {
 	cfg := cm.Get()
 	if cfg.ServerURL == "" {
@@ -457,7 +466,19 @@ func pushServiceRegistration(cm *ConfigManager, name, subtype string, remove boo
 		msgType = "unregister_service"
 	}
 
-	// Short-lived, single round-trip: connect, send, wait for a response frame,
+	// Preferred path: hand the frame to the daemon over the tray IPC socket.
+	// The daemon pushes it over its own connection and the CLI never competes
+	// for the directory's single-connection-per-agent slot.
+	if err := sendTrayCommand(TrayCommand{
+		Command: msgType,
+		Service: name,
+		Subtype: subtype,
+	}); err == nil {
+		return nil
+	}
+
+	// Fallback: the daemon is not running (or the socket is stale). Open a
+	// short-lived one-shot WebSocket: connect, send, wait for a response frame,
 	// then close. 15s covers a slow directory.
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
 	conn, _, err := dialer.Dial(serviceWSURL(cfg), nil)

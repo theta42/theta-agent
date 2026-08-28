@@ -73,6 +73,10 @@ with its regular telemetry, so it appears under this host and its status
 stays current. Registration is recorded in agent.yml under services:, so it
 survives restarts and upgrades.
 
+The change is pushed to the Directory by the running daemon over its own
+connection; if the daemon is down, this command falls back to a direct
+connection. Either way the directory reflects the change immediately.
+
   theta-agent register systemd nginx
   theta-agent register docker plex
   theta-agent list-services

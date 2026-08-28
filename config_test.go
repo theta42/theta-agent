@@ -264,10 +264,10 @@ func TestClearEnrollment(t *testing.T) {
 // just-registered service never appearing in telemetry.
 //
 // `theta-agent register` writes agent.yml from its OWN process and tells the
-// Directory over a one-shot socket. The daemon held its config in memory, so
-// `services:` on the wire stayed as it was at startup: the Directory created
-// the service resource from the registration and then never got a status
-// sample for it.
+// Directory (via the daemon's WebSocket, or a one-shot connection when the
+// daemon is down). The daemon held its config in memory, so `services:` on the
+// wire stayed as it was at startup: the Directory created the service resource
+// from the registration and then never got a status sample for it.
 func TestReloadIfChangedPicksUpAnotherProcessesEdit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.yml")
