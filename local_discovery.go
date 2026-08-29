@@ -351,3 +351,54 @@ func txtField(entry *mdns.ServiceEntry, key string) string {
 	}
 	return ""
 }
+
+// resolveSiteHint answers "which site am I at?" for the enrolment handshake,
+// and is sent as `?site=` on the join-key connect (websocket.go).
+//
+// It is a LABEL, not a credential. The directory uses it to decide which site
+// row a newly self-enrolled host is filed under; the join key and TLS decide
+// whether the agent gets in at all. That is what makes taking it from
+// unauthenticated mDNS acceptable here, when auto-switching which directory an
+// enrolled agent talks to (the "roaming" case) is deliberately not built.
+//
+// Order:
+//  1. `location` in agent.yml. An operator said so; nothing overrides that.
+//  2. The `site` TXT field of a local `_theta-suite._tcp` announcement that
+//     fronts the very host this agent is already configured to talk to. The
+//     "fronts our own server_url host" condition is doing real work: without
+//     it, any site announcing on the segment could label us.
+//  3. "" -- the directory falls back to its own current site.
+//
+// Unlike StartLocalDiscovery this does not depend on `local_discovery` being
+// enabled: that flag gates rewriting /etc/hosts system-wide, which is a much
+// bigger thing to consent to than reading a hostname off the wire once.
+func resolveSiteHint(cfg *Config) string {
+	if s := strings.TrimSpace(cfg.Location); s != "" && s != "default" {
+		return s
+	}
+
+	targetHost := hostFromURL(cfg.ServerURL)
+	if targetHost == "" {
+		return ""
+	}
+
+	for _, a := range browseAnnouncementsFor(mdnsLookupTimeout, targetHost) {
+		if a.Site != "" {
+			log.Printf("[local-discovery] site %q announced locally for %s", a.Site, targetHost)
+			return a.Site
+		}
+	}
+	return ""
+}
+
+// browseAnnouncementsFor is browseAnnouncements narrowed to announcements that
+// front targetHost.
+func browseAnnouncementsFor(timeout time.Duration, targetHost string) []Announcement {
+	var out []Announcement
+	for _, a := range browseAnnouncements(timeout) {
+		if a.DirectoryHost == targetHost {
+			out = append(out, a)
+		}
+	}
+	return out
+}

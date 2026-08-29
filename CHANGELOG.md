@@ -1,3 +1,12 @@
+## [v2.20.0] - 2026-08-28
+
+### Added
+- **The agent tells the directory which site it is at when it self-enrols.** A join-key connection now carries `?site=<slug>`, resolved in order: `location` from `agent.yml` (an operator said so; nothing overrides it), then the `site` TXT field of a local `_theta-suite._tcp` mDNS announcement that fronts the very host the agent is already configured to talk to, then empty — in which case the directory files the host under its own current site. Without this a self-enrolled machine landed wherever the directory guessed, which is how a host ends up in the wrong site inheriting the wrong access.
+
+  The hint is a **label, not a credential**: the join key and TLS decide whether the agent gets in at all, which is what makes taking it from unauthenticated mDNS acceptable here. The "fronts our own `server_url` host" condition is load-bearing — without it any site announcing on the segment could label us. It is sent **only** when `AuthToken` is empty, so it can never be read as a roaming signal for an already-enrolled agent, and unlike `StartLocalDiscovery` it does not require `local_discovery: true`: reading a hostname off the wire once is a much smaller thing to consent to than rewriting `/etc/hosts` system-wide.
+
+  Requires theta-directory ≥ v2.35.0, which also fixes the other half of this: join-key enrolment used to *require* a `?site=` that no shipped agent sent.
+
 ## [v2.19.0] - 2026-08-28
 ### Fixed
 - **`theta-agent register` reported failure for a successful registration.** The CLI pushed the frame over its own one-shot WebSocket, but the directory allows one connection per agent: the new connection superseded the daemon's (4002) and the daemon's immediate reconnect superseded the CLI's in turn, so the frame was lost and the command printed "could not notify Theta Directory" while the telemetry fallback quietly created the child 30s later. The CLI now hands the frame to the running daemon over the tray IPC socket and the daemon pushes it over its own stable connection — no competing connection, no race. A one-shot WebSocket remains as the fallback for hosts whose daemon is down.
