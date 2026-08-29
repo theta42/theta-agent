@@ -128,6 +128,16 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		if hn, err := os.Hostname(); err == nil && hn != "" {
 			q.Set("hostname", hn)
 		}
+		// Only on the join-key path: `site` tells the directory which site to
+		// file this machine's new host row under, and it has no meaning once
+		// we are enrolled and the host row exists. Sending it always would
+		// invite a future server to act on it for an established agent, which
+		// is the roaming case local_discovery.go deliberately does not build.
+		if cfg.AuthToken == "" {
+			if site := resolveSiteHint(cfg); site != "" {
+				q.Set("site", site)
+			}
+		}
 		u.RawQuery = q.Encode()
 
 		if cfg.Credential() == "" {
