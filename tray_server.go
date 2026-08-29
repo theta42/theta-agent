@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 )
 
 type trayServer struct {
@@ -102,31 +101,8 @@ func (ts *trayServer) handleConn(conn net.Conn) {
 	}
 }
 
-// peerEuid returns the euid of the process on the other end of a Unix socket
-// using SO_PEERCRED. Returns -1 if the credential cannot be read (non-Unix
-// connection, or the OS does not support it) — callers must treat -1 as
-// "not root" so the safe default is to refuse the mutating command.
-func peerEuid(conn net.Conn) int64 {
-	sc, ok := conn.(*net.UnixConn)
-	if !ok {
-		return -1
-	}
-	raw, err := sc.SyscallConn()
-	if err != nil {
-		return -1
-	}
-	var cred *syscall.Ucred
-	var credErr error
-	if err := raw.Control(func(fd uintptr) {
-		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	}); err != nil {
-		return -1
-	}
-	if credErr != nil {
-		return -1
-	}
-	return int64(cred.Uid)
-}
+// peerEuid lives in tray_peercred_linux.go (SO_PEERCRED) and
+// tray_peercred_other.go (fallbacks).
 
 // isMutatingTrayCommand reports whether a tray IPC command changes agent
 // state. Those require the peer to be root (euid 0) — the CLI runs as root;

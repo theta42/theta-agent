@@ -1,3 +1,8 @@
+## [v2.21.1] - 2026-08-29
+
+### Fixed
+- **The agent no longer compiled on Windows.** The v2.21.0 tray IPC peer-credential check called `syscall.Ucred` / `syscall.GetsockoptUcred` unconditionally — Linux-only symbols — so `go build` failed on Windows (and the Windows release job, which runs `go test` before compiling, could never publish artifacts). `peerEuid` now lives in a Linux file carrying the real `SO_PEERCRED` implementation and a portable fallback: on Windows, where AF_UNIX exposes no peer-credential interface, mutating tray commands are accepted exactly as before v2.21.0 (the gate there is the ACL on `%ProgramData%\Theta42`, where the socket lives); every other non-Linux platform takes the safe default and refuses.
+
 ## [v2.21.0] - 2026-08-29
 
 ### Fixed
