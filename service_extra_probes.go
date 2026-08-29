@@ -337,9 +337,17 @@ func probeCron(exec Executor, name string) ServiceMetric {
 // cronConfigLines returns the job lines relevant to a named cron entry: the
 // /etc/cron.d/<name> file if present, plus any matching lines from the system
 // crontab and the named user's spool. A comment-only file yields no lines.
+//
+// The name is validated against serviceNamePattern before being interpolated
+// into a path, so a name containing "/" or ".." cannot escape /etc/cron.d/ or
+// /var/spool/cron/ (M30).
 func cronConfigLines(name string) []string {
 	var lines []string
 	seen := map[string]bool{}
+
+	if err := validateServiceName(name); err != nil {
+		return nil
+	}
 
 	addFile := func(path string) {
 		data, err := os.ReadFile(path)

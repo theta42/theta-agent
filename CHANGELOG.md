@@ -1,3 +1,18 @@
+## [v2.21.0] - 2026-08-29
+
+### Fixed
+- **Local IPC privilege escalation hardening (H6):** Enforced `SO_PEERCRED` checks on `/run/theta/tray.sock` requiring mutating commands (`restart`, `update`, `reload`) to originate from EUID 0 (root).
+- **Cryptographic command envelope verification (H7):** Implemented strict Ed25519 signature verification across all desktop control actions, service restarts, and update binary payloads over `{type, payload}` canonical envelope (Contract G-1).
+- **Service name validation and config permissions (H9):** Added service name character allowlist (`[a-zA-Z0-9_-]+`), explicit `0600` permissions when writing `agent.yml`, and literal string replacements for `/etc/hosts` entries.
+- **WebSocket limits and deadlines (M13):** Set 1 MiB message read limits, explicit pong handlers, read deadlines, and timeouts on binary downloads.
+- **Connection backoff on superseded code (M14):** Added backoff jitter when receiving close code `4002` (superseded connection).
+- **Tray socket multi-path binding (M15):** Dial and bind sequentially across `/run/theta/tray.sock`, `/run/user/<uid>/theta-agent/tray.sock`, and `%LOCALAPPDATA%\ThetaAgent\tray.sock`.
+- **Nil dereference protection (M16):** Added nil checks across discovery data gathering and WebSocket URL parsing.
+- **Cron probe path traversal protection (M30):** Validated service names before probing `/etc/cron.*` to prevent directory traversal.
+- **Zpool scrub support (M31):** Implemented verified `zpool_scrub` control handler.
+- **Verbose logging flag (L4):** Guarded high-volume debug logs behind `verbose_logging` configuration option.
+- **WebSocket Authorization Header (L5):** Added `Authorization: Bearer <token>` HTTP header during WebSocket handshake.
+
 ## [v2.20.0] - 2026-08-28
 
 ### Added

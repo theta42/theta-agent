@@ -290,40 +290,12 @@ func (p *windowsPlatformOps) DisconnectWireGuard() error {
 // §4): local groups for allowed_login_groups, per-user authorized_keys for
 // OpenSSH, and session logoff via the helper for revocation.
 func (p *windowsPlatformOps) ApplyIAM(payload IAMPayload) error {
-	ac := payload.AccessControl
+	return applyIAM(payload, p.exec)
+}
 
-	for _, g := range ac.AllowedLoginGroups {
-		if g == "" {
-			continue
-		}
-		if _, err := p.exec.Execute("net", "localgroup", g, "/add"); err != nil {
-			log.Printf("[iam] net localgroup %s /add: %v", g, err)
-		}
-	}
-
-	if len(ac.SSHKeys) > 0 {
-		if err := applyWindowsSSHKeys(ac.SSHKeys); err != nil {
-			log.Printf("[iam] ssh keys: %v", err)
-		}
-	}
-
-	for _, u := range ac.RevokeUsers {
-		if u == "" {
-			continue
-		}
-		if p.helperPath != "" {
-			if _, err := p.exec.Execute(p.helperPath, "logout", u); err != nil {
-				log.Printf("[iam] revoke %s: %v", u, err)
-			}
-		} else {
-			log.Printf("[iam] revoke %s: desktop_helper not configured; no sessions logged off", u)
-		}
-	}
-
-	if len(ac.SudoRules) > 0 {
-		log.Println("[iam] sudo_rules have no direct Windows equivalent; mapped to local group membership (UAC elevation policy)")
-	}
-	return nil
+// ZpoolScrub is not supported on Windows (ZFS is a Unix filesystem).
+func (p *windowsPlatformOps) ZpoolScrub(pool string) ([]byte, error) {
+	return nil, fmt.Errorf("zpool_scrub is not supported on Windows")
 }
 
 // spawnDetached launches exe as a background process that survives this one.

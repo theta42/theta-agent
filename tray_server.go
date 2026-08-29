@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 type trayServer struct {
@@ -31,35 +32,48 @@ var globalTrayServer = &trayServer{
 
 // Start begins listening on the tray socket. Call from main() as a goroutine.
 func (ts *trayServer) Start() {
-	var l net.Listener
-	var boundPath string
-	var err error
+	var listeners []net.Listener
+	var boundPaths []string
 
 	for _, p := range TraySocketPaths {
 		os.Remove(p)
 		os.MkdirAll(filepath.Dir(p), 0755) //nolint:errcheck
-		l, err = net.Listen("unix", p)
-		if err == nil {
-			boundPath = p
-			os.Chmod(p, 0666) //nolint:errcheck
-			break
+		l, err := net.Listen("unix", p)
+		if err != nil {
+			log.Printf("[tray-ipc] cannot listen on %s: %v", p, err)
+			continue
 		}
+		if err := os.Chmod(p, 0666); err != nil { //nolint:errcheck
+			log.Printf("[tray-ipc] cannot chmod %s: %v", p, err)
+		}
+		boundPaths = append(boundPaths, p)
+		listeners = append(listeners, l)
 	}
 
-	if err != nil || boundPath == "" {
-		log.Printf("[tray-ipc] cannot listen on tray socket: %v (tray icon disabled)", err)
+	if len(listeners) == 0 {
+		log.Printf("[tray-ipc] cannot listen on any tray socket: tray icon disabled")
 		return
 	}
 
-	log.Printf("[tray-ipc] listening on %s", boundPath)
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			log.Printf("[tray-ipc] accept error: %v", err)
-			return
-		}
-		go ts.handleConn(conn)
+	log.Printf("[tray-ipc] listening on %v", boundPaths)
+
+	// Accept on every bound listener. A goroutine per listener; each exits
+	// when its listener errors (e.g. on Close).
+	var wg sync.WaitGroup
+	for _, l := range listeners {
+		wg.Add(1)
+		go func(l net.Listener) {
+			defer wg.Done()
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				go ts.handleConn(conn)
+			}
+		}(l)
 	}
+	wg.Wait()
 }
 
 func (ts *trayServer) handleConn(conn net.Conn) {
@@ -84,11 +98,53 @@ func (ts *trayServer) handleConn(conn net.Conn) {
 		if err != nil {
 			continue
 		}
-		ts.handleCommand(cmd)
+		ts.handleCommand(conn, cmd)
 	}
 }
 
-func (ts *trayServer) handleCommand(cmd TrayCommand) {
+// peerEuid returns the euid of the process on the other end of a Unix socket
+// using SO_PEERCRED. Returns -1 if the credential cannot be read (non-Unix
+// connection, or the OS does not support it) — callers must treat -1 as
+// "not root" so the safe default is to refuse the mutating command.
+func peerEuid(conn net.Conn) int64 {
+	sc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return -1
+	}
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return -1
+	}
+	var cred *syscall.Ucred
+	var credErr error
+	if err := raw.Control(func(fd uintptr) {
+		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+	}); err != nil {
+		return -1
+	}
+	if credErr != nil {
+		return -1
+	}
+	return int64(cred.Uid)
+}
+
+// isMutatingTrayCommand reports whether a tray IPC command changes agent
+// state. Those require the peer to be root (euid 0) — the CLI runs as root;
+// the tray runs as the logged-in user and may only read status, which the
+// 0666 socket already allows.
+func isMutatingTrayCommand(cmd string) bool {
+	switch cmd {
+	case "set_auto_vpn", "vpn_connect", "vpn_disconnect", "reinit", "set_exit", "register_service", "unregister_service":
+		return true
+	}
+	return false
+}
+
+func (ts *trayServer) handleCommand(conn net.Conn, cmd TrayCommand) {
+	if isMutatingTrayCommand(cmd.Command) && peerEuid(conn) != 0 {
+		log.Printf("[tray-ipc] rejected %s: peer euid %d is not root", cmd.Command, peerEuid(conn))
+		return
+	}
 	switch cmd.Command {
 	case "set_auto_vpn":
 		ts.mu.Lock()
@@ -167,6 +223,7 @@ func (ts *trayServer) handleCommand(cmd TrayCommand) {
 	}
 }
 
+
 // Push broadcasts an updated status to all connected tray clients.
 func (ts *trayServer) Push(status TrayStatus) {
 	ts.mu.Lock()
@@ -238,33 +295,51 @@ func UpdateTrayStatus(connected, isHome bool, agentPublicIP, homePublicIP string
 // process. A var so tests can stub it: the CLI's pushServiceRegistration uses
 // it to hand register/unregister frames to the daemon, and the fallback path
 // must be testable without a real socket.
+//
+// The daemon may listen on any of TraySocketPaths (M15), so try each in order
+// and use the first that connects.
 var sendTrayCommand = func(cmd TrayCommand) error {
-	conn, err := net.Dial("unix", TraySocket)
-	if err != nil {
-		return fmt.Errorf("cannot connect to daemon IPC socket: %w", err)
+	var lastErr error
+	for _, p := range TraySocketPaths {
+		conn, err := net.Dial("unix", p)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer conn.Close()
+		return json.NewEncoder(conn).Encode(cmd)
 	}
-	defer conn.Close()
-	return json.NewEncoder(conn).Encode(cmd)
+	if lastErr != nil {
+		return fmt.Errorf("cannot connect to daemon IPC socket: %w", lastErr)
+	}
+	return fmt.Errorf("no tray socket paths configured")
 }
 
 // receiveTrayStatus opens a persistent connection and calls cb on every status
 // update. Blocks until the connection is lost. Call in a goroutine.
 func receiveTrayStatus(cb func(TrayStatus)) error {
-	conn, err := net.Dial("unix", TraySocket)
-	if err != nil {
-		return fmt.Errorf("cannot connect to daemon IPC socket: %w", err)
-	}
-	defer conn.Close()
-
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		s, err := decodeTrayStatus(scanner.Bytes())
-		if err == nil {
-			cb(s)
+	var lastErr error
+	for _, p := range TraySocketPaths {
+		conn, err := net.Dial("unix", p)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			s, err := decodeTrayStatus(scanner.Bytes())
+			if err == nil {
+				cb(s)
+			}
+		}
+		if err := scanner.Err(); err != nil && err != io.EOF {
+			return err
+		}
+		return nil
 	}
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		return err
+	if lastErr != nil {
+		return fmt.Errorf("cannot connect to daemon IPC socket: %w", lastErr)
 	}
-	return nil
+	return fmt.Errorf("no tray socket paths configured")
 }

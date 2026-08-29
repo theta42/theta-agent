@@ -380,3 +380,9 @@ func (p *linuxPlatformOps) DisconnectWireGuard() error {
 func (p *linuxPlatformOps) ApplyIAM(payload IAMPayload) error {
 	return applyIAM(payload, p.exec)
 }
+
+// ZpoolScrub starts a scrub on the named zpool. The pool name is validated
+// by the caller (websocket.go) before reaching here.
+func (p *linuxPlatformOps) ZpoolScrub(pool string) ([]byte, error) {
+	return p.exec.Execute("zpool", "scrub", pool)
+}

@@ -86,8 +86,11 @@ func verifySignature(cfg *Config, msg WSMessage) bool {
 		return false
 	}
 
-	// Create canonical payload for verification (remove signature key)
+	// G-1 signature envelope: the signature covers {type, payload}, so bind the
+	// command type into the canonical bytes. A signature for one command type
+	// then cannot be replayed as another (H7 — type-portable replay).
 	payloadCopy := make(map[string]interface{})
+	payloadCopy["type"] = msg.Type
 	for k, v := range msg.Payload {
 		if k != "signature" {
 			payloadCopy[k] = v
@@ -106,8 +109,7 @@ func verifySignature(cfg *Config, msg WSMessage) bool {
 	}
 
 	return ed25519.Verify(pubKeyBytes, canonicalPayload, sig)
-}
-
+ }
 func connectWebSocket(cm *ConfigManager, exec Executor) {
 	for {
 		cfg := cm.Get()
@@ -117,14 +119,15 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 
 		u, err := url.Parse(serverURL)
 		if err != nil {
-			log.Fatalf("Invalid ServerURL: %v", err)
+			log.Printf("Invalid ServerURL: %v. Retrying in 5 seconds...", err)
+			time.Sleep(5 * time.Second)
+			continue
 		}
 		u.Path = "/api/agent/ws"
 		// Our own token once enrolled, else the join key. The hostname lets the
 		// server name a self-enrolling host something meaningful instead of a
 		// generated placeholder.
 		q := url.Values{}
-		q.Set("token", cfg.Credential())
 		if hn, err := os.Hostname(); err == nil && hn != "" {
 			q.Set("hostname", hn)
 		}
@@ -140,6 +143,21 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		}
 		u.RawQuery = q.Encode()
 
+		// Prefer the Authorization header over the query string: a token in a
+		// URL is logged by proxies, appears in server access logs, and sits in
+		// browser history. The header keeps it out of those surfaces. The
+		// server accepts both (api_agent.js falls back to ?token=), so this is
+		// a pure improvement with no compatibility cost.
+		//
+		// Never log u.String() below: even with the header set, the credential
+		// may still be present in the query during the join-key flow, and
+		// agent logs are routinely shipped around and pasted into issues.
+		var headers http.Header
+		if cred := cfg.Credential(); cred != "" {
+			headers = http.Header{}
+			headers.Set("Authorization", cred)
+		}
+
 		if cfg.Credential() == "" {
 			log.Printf("No auth_token or join_key in %s -- nothing to authenticate with. Retrying in %s.", cm.configPath, authRetryInterval)
 			time.Sleep(authRetryInterval)
@@ -150,7 +168,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// are routinely shipped around and pasted into issues.
 		log.Printf("Connecting to %s%s", u.Host, u.Path)
 
-		c, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		c, resp, err := websocket.DefaultDialer.Dial(u.String(), headers)
 		if err != nil {
 			// The server now rejects tokens it did not issue. Retrying a bad
 			// credential every 5s just floods the SSO and its audit log
@@ -207,6 +225,28 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// Start telemetry and discovery with stopCh lifecycle control
 		StartTelemetryLoop(sw, cm, exec, stopCh)
 
+		// WebSocket keepalive: a ping/pong frame every 60s with a 90s read
+		// deadline. Without this, a silent peer (NAT drop, cable pull) leaves
+		// the read loop blocked forever and the agent never reconnects. The
+		// pong handler resets the read deadline on every pong; if the deadline
+		// elapses the connection closes and the read loop exits, triggering
+		// reconnect.
+		const readLimit = 1 << 20 // 1 MiB — reject any frame larger than this
+		c.SetReadLimit(readLimit)
+		c.SetPongHandler(func(string) error {
+			return c.SetReadDeadline(time.Now().Add(90 * time.Second))
+		})
+		if err := c.SetReadDeadline(time.Now().Add(90 * time.Second)); err != nil {
+			log.Printf("Failed to set initial read deadline: %v", err)
+			c.Close()
+			continue
+		}
+
+		// Ping ticker sends a ping every 60s; the server's pong resets the
+		// read deadline via the pong handler above.
+		pingTicker := time.NewTicker(60 * time.Second)
+		defer pingTicker.Stop()
+
 		// Heartbeat loop
 		go func() {
 			ticker := time.NewTicker(60 * time.Second)
@@ -237,7 +277,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				// The SSO accepts the upgrade and only then closes with an
 				// application code, so an auth failure surfaces here rather
 				// than at Dial.
-				if websocket.IsCloseError(err, closeUnauthorized, closeRevoked, closeTokenRotated) {
+				if websocket.IsCloseError(err, closeUnauthorized, closeRevoked, closeTokenRotated, closeSuperseded) {
 					authRejected = true
 					log.Printf("Server closed the connection: %v. This agent's token is not valid for that Theta Directory — re-enroll it and update agent.yml.", err)
 				} else {
@@ -245,45 +285,63 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				}
 				break // break read loop, reconnect
 			}
-
-			var msg WSMessage
-			if err := json.Unmarshal(message, &msg); err != nil {
-				log.Printf("Error unmarshaling message: %v", err)
-				continue
+			// Reset the read deadline on every successful message; the pong
+			// handler does the same for pong frames.
+			if err := c.SetReadDeadline(time.Now().Add(90 * time.Second)); err != nil {
+				log.Printf("Failed to reset read deadline: %v", err)
+				break
 			}
 
-			handleCommand(cm, msg, sw, exec, tunnel)
-		}
-
-		// Cleanup on disconnect
-		wsConnected.Store(false)
-		currentWriterMu.Lock()
-		currentWriter = nil
-		currentWriterMu.Unlock()
-		close(stopCh)
-		c.Close()
-
-		if authRejected {
-			log.Printf("Reconnecting in %s.", authRetryInterval)
-			time.Sleep(authRetryInterval)
+		var msg WSMessage
+		if err := json.Unmarshal(message, &msg); err != nil {
+			log.Printf("Error unmarshaling message: %v", err)
 			continue
 		}
 
-		log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
-		// A local-discovery apply/revert (hosts override + route change) wants
-		// the new resolution path picked up right away rather than after the
-		// full backoff. discoveryChangedCh is drained here only; a change
-		// while still connected takes effect on the next natural reconnect.
-		select {
-		case <-discoveryChangedCh:
-			log.Println("Local-discovery routing changed; reconnecting immediately.")
-		case <-time.After(5 * time.Second):
-		}
+		handleCommand(cm, msg, sw, exec, tunnel)
 	}
+
+	// Cleanup on disconnect
+	wsConnected.Store(false)
+	currentWriterMu.Lock()
+	currentWriter = nil
+	currentWriterMu.Unlock()
+	close(stopCh)
+	c.Close()
+
+	if authRejected {
+		log.Printf("Reconnecting in %s.", authRetryInterval)
+		time.Sleep(authRetryInterval)
+		continue
+	}
+
+	log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
+	// A local-discovery apply/revert (hosts override + route change) wants
+	// the new resolution path picked up right away rather than after the
+	// full backoff. discoveryChangedCh is drained here only; a change
+	// while still connected takes effect on the next natural reconnect.
+	select {
+	case <-discoveryChangedCh:
+		log.Println("Local-discovery routing changed; reconnecting immediately.")
+	case <-time.After(5 * time.Second):
+	}
+}
+
 }
 
 func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Executor, tunnel *ldapTunnel) {
 	cfg := cm.Get()
+
+	// debugf logs full payloads (scripts, config data) only when
+	// verbose_logging is enabled in agent.yml. These payloads can hold
+	// credentials or sensitive config, so the default (off) logs only a
+	// one-line summary.
+	debugf := func(format string, a ...interface{}) {
+		if cfg.VerboseLogging {
+			log.Printf("[verbose]"+format, a...)
+		}
+	}
+
 	// Don't log the server's fire-and-forget heartbeat ack — it arrives every
 	// 60s and is not a command to act on; logging it is pure per-minute noise.
 	// The LDAP tunnel is high-frequency (every chunk of a bind/search), so it is
@@ -296,7 +354,6 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		resp, _ := json.Marshal(map[string]string{"status": status, "message": message})
 		c.WriteMessage(websocket.TextMessage, resp)
 	}
-
 	switch msg.Type {
 	case "ldap_tunnel":
 		// SSO→agent direction of the LDAP byte pump: write the response bytes to
@@ -407,7 +464,8 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			SetOrganizationName(orgName)
 			log.Printf("[branding] organization name: %s", orgName)
 		}
-		log.Printf("Received config payload: %v", msg.Payload)
+		debugf("config payload (full): %v", msg.Payload)
+		log.Printf("Received config payload: %d fields", len(msg.Payload))
 		sendResponse("ok", "Configuration received")
 	case "reboot":
 		if !verifySignature(cfg, msg) {
@@ -443,6 +501,10 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 		return
 	case "desktop_control", "lock_session", "logout_user", "display_off", "sleep_host":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
 		subAction, _ := msg.Payload["subAction"].(string)
 		if subAction == "" {
 			subAction = msg.Type
@@ -509,6 +571,10 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		c.WriteMessage(websocket.TextMessage, respPayload)
 		return
 	case "service_restart":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
 		serviceName, ok := msg.Payload["service"].(string)
 		if !ok || !cfg.Capabilities.CanManageService(serviceName) {
 			log.Printf("Service restart rejected for '%s': not in allowed service list", serviceName)
@@ -540,6 +606,8 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 
+		debugf("configure_ldap payload (full): %s", configData)
+		log.Printf("Applying LDAP configuration: %d bytes", len(configData))
 		if err := defaultPlatformOps.ConfigureLDAP(configData); err != nil {
 			log.Printf("LDAP configuration failed: %v", err)
 			sendResponse("error", err.Error())
@@ -727,7 +795,8 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 
-		log.Printf("Executing remote script: %s", script)
+		debugf("Executing remote script (full): %s", script)
+		log.Printf("Executing remote script: %d bytes", len(script))
 		out, err := defaultPlatformOps.RunScript(script)
 		if err != nil {
 			log.Printf("Script execution failed: %v", err)
@@ -742,7 +811,45 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		respPayload, _ := json.Marshal(resp)
 		c.WriteMessage(websocket.TextMessage, respPayload)
 		return
-	// heartbeat_ack is the server's acknowledgement of the agent's own periodic
+	case "zpool_scrub":
+		if !verifySignature(cfg, msg) {
+			sendResponse("error", "signature verification failed")
+			return
+		}
+		if !cfg.Capabilities.Storage {
+			log.Println("zpool_scrub rejected: storage capability disabled in agent.yml")
+			sendResponse("error", "storage capability disabled")
+			return
+		}
+		pool, _ := msg.Payload["pool"].(string)
+		if pool == "" {
+			sendResponse("error", "missing pool name")
+			return
+		}
+		if err := validateServiceName(pool); err != nil {
+			sendResponse("error", fmt.Sprintf("invalid pool name: %v", err))
+			return
+		}
+		log.Printf("Starting zpool scrub on %s...", pool)
+		out, err := defaultPlatformOps.ZpoolScrub(pool)
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+			log.Printf("zpool scrub failed: %v", err)
+			sendResponse("error", fmt.Sprintf("zpool scrub failed: %v", err))
+			return
+		}
+		resp := map[string]string{
+			"status": "ok",
+			"output": string(out),
+		}
+		if errMsg != "" {
+			resp["error"] = errMsg
+		}
+		respPayload, _ := json.Marshal(resp)
+		c.WriteMessage(websocket.TextMessage, respPayload)
+		return
+ 	// heartbeat_ack is the server's acknowledgement of the agent's own periodic
 	// heartbeat (the agent sends `heartbeat`, the server answers `heartbeat_ack`).
 	// There is nothing to do with it -- it is not a command to run, and answering
 	// an ack with an error response would inject spurious errors into the
@@ -794,7 +901,10 @@ func pushServiceFrame(msgType, service, subtype string) error {
 // how to install it (Linux renames over the running exe; Windows stages a
 // `.new` and swaps via the helper once the service stops).
 func downloadBinary(downloadURL string, expectedSHA256 string, dir string) (string, error) {
-	resp, err := http.Get(downloadURL)
+	// Dedicated client with a bounded timeout so a slow or unresponsive server
+	// cannot hang the update forever. The cap on CopyN below bounds the body.
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("http fetch failed: %w", err)
 	}
@@ -819,18 +929,32 @@ func downloadBinary(downloadURL string, expectedSHA256 string, dir string) (stri
 	hasher := sha256.New()
 	writer := io.MultiWriter(tmpFile, hasher)
 
-	if _, err := io.Copy(writer, resp.Body); err != nil {
+	// Cap the download at 256 MiB — a theta-agent binary is a few tens of MiB.
+	// Without a cap, a malicious or misbehaving server returning an unbounded
+	// body could fill local disk before the SHA check ever runs.
+	const maxBinarySize = 256 << 20
+	written, err := io.CopyN(writer, resp.Body, maxBinarySize)
+	if err != nil && err != io.EOF {
 		tmpFile.Close()
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to save binary: %w", err)
+	}
+	if written == maxBinarySize {
+		// We hit the cap; the body was larger than allowed.
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("binary exceeds maximum allowed size (%d bytes)", maxBinarySize)
 	}
 	tmpFile.Close()
 
 	actualSHA256 := fmt.Sprintf("%x", hasher.Sum(nil))
 	if !strings.EqualFold(actualSHA256, strings.TrimSpace(expectedSHA256)) {
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
 	}
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to set executable permissions: %w", err)
 	}
 

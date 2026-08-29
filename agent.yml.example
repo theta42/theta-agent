@@ -113,6 +113,16 @@ capabilities:
   # Registers systemd services as child resources of this host.
   service_registration: true
 
+  # Accept signed zpool_scrub commands from Theta Directory (ZFS pool scrub).
+  # Default false: a host without an explicit `storage: true` cannot be sent
+  # scrub commands, even if it holds the signing key.
+  storage: false
+
+  # Log full remote scripts and config payloads at debug level. Default off:
+  # these payloads can hold credentials or sensitive config, so only a
+  # one-line summary is logged unless this is enabled.
+  verbose_logging: false
+
 # Secret templates to render (DESIGN.md ??5). Each maps a local template to a
 # target file and an optional post-render reload. The template embeds secrets as
 # {{ bao "secret/data/nodes/<node-id>/<name>#<key>" }}.

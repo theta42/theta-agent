@@ -169,7 +169,7 @@ func TestWireGuardApplyActivationDependsOnState(t *testing.T) {
 				payload["exitSiteId"] = nil
 			}
 			mockConn := &MockConn{}
-			handleCommand(cm, WSMessage{Type: "wireguard_apply", Payload: sign(t, payload)}, mockConn, mockExec, nil)
+			handleCommand(cm, WSMessage{Type: "wireguard_apply", Payload: sign(t, "wireguard_apply", payload)}, mockConn, mockExec, nil)
 
 			if len(mockConn.Messages) != 1 {
 				t.Fatalf("expected 1 response, got %d", len(mockConn.Messages))

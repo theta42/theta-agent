@@ -62,6 +62,9 @@ type PlatformOps interface {
 
 	// ApplyIAM applies a verified node identity payload (DESIGN.md §6).
 	ApplyIAM(payload IAMPayload) error
+
+	// ZpoolScrub starts a scrub on the named zpool (signed, storage capability).
+	ZpoolScrub(pool string) ([]byte, error)
 }
 
 // defaultPlatformOps is the ops implementation the command dispatcher uses.
