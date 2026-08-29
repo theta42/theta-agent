@@ -11,10 +11,13 @@ agent ignores what it does not know; an older server simply never sends it.
 
 The agent establishes a persistent outbound WebSocket connection.
 
-- **Endpoint**: `wss://<manager-url>/api/agent/ws`
-- **Authentication**: The agent must provide its enrollment token as a query parameter:
-  - `wss://<manager-url>/api/agent/ws?token=<AGENT_TOKEN>`
 
+- **Endpoint**: `wss://<manager-url>/api/agent/ws`
+- **Authentication**: The agent presents its enrollment token (its own
+  `auth_token` once enrolled, otherwise `join_key`). Preferred: set the
+  `Authorization` header to the raw token; the server also accepts `?token=<…>`
+  in the query string for compatibility, but the header keeps the credential
+  out of proxy/server access logs where a URL query string would be recorded.
 ### 1.1 Enrollment (changed in v1.2.0)
 
 Two credentials can appear in `agent.yml`. The agent presents `auth_token` when
@@ -233,7 +236,7 @@ These commands are executed if the corresponding capability is enabled in `agent
 These commands **require** an Ed25519 signature in the payload. The agent verifies the signature against the `public_key` in its config.
 
 **Signature Format**:
-- The `signature` field contains the base64-encoded Ed25519 signature of the payload (with the `signature` key removed).
+- The `signature` field contains the base64-encoded Ed25519 signature of the `{type, payload}` envelope (contract G-1): the command's `type` is bound into the canonical bytes alongside the payload, and the `signature` key is omitted. Binding `type` in prevents a signature for one command type from being replayed as another (no type-portable replay).
 
 | Command | Payload | Effect |
 | :--- | :--- | :--- |
@@ -358,12 +361,13 @@ reported rather than masked, so "nothing happened" is distinguishable from
 
 To send a high-risk command:
 1. Create the payload (e.g., `{"script": "uptime"}`).
-2. Canonicalize the JSON (see 5.1).
-3. Sign the canonical bytes using the private Ed25519 key.
-4. Add the base64 signature to the payload: `{"script": "uptime", "signature": "..."}`.
-5. Send as a `WSMessage`.
+2. Build the signing envelope `{"type": "<commandType>", ...payload}` (contract G-1 — the type is bound into the signature).
+3. Canonicalize the JSON (see 5.1).
+4. Sign the canonical bytes using the private Ed25519 key.
+5. Add the base64 signature to the payload: `{"script": "uptime", "signature": "..."}`.
+6. Send as a `WSMessage` carrying the command `type` and the now-signed payload.
 
-The agent performs the reverse process to verify authenticity before execution.
+The agent performs the reverse process to verify authenticity before execution: it rebuilds the same `{type, payload}` envelope from the `WSMessage`, canonicalizes it, and verifies the Ed25519 signature against the pinned `public_key`.
 
 ### 5.1 Canonical form
 
@@ -371,6 +375,7 @@ Both sides must produce **byte-identical** input to sign/verify:
 
 - keys sorted alphabetically
 - no insignificant whitespace
+- the `type` key included (it is part of the signed envelope)
 - the `signature` key omitted
 - **no HTML escaping** — `<`, `>` and `&` are emitted literally
 - no trailing newline

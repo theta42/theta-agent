@@ -311,12 +311,15 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.20.0"
+const AgentVersion = "v2.21.0"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
-	h, _ := host.Info()
-
+	h, hostErr := host.Info()
+	if hostErr != nil {
+		log.Printf("[discovery] host.Info() failed: %v", hostErr)
+		h = &host.InfoStat{} // zero-value fallback
+	}
 	ips := collectIPs()
 
 	vm := collectRAMDetails()
@@ -524,6 +527,13 @@ func probeService(exec Executor, name string) ServiceMetric {
 // cpuNSCache remembers the previous CPUUsageNS sample per service so the agent
 // can compute a CPU-per-second rate between two telemetry ticks (30s apart).
 // Guarded so concurrent telemetry loops cannot race.
+//
+// The cache is bounded: once it exceeds maxCacheEntries the oldest entry is
+// evicted so a long-lived agent with many transient services cannot grow the
+// map without limit. The process-keyed cache in processCPUPercent shares the
+// same bound.
+const maxCacheEntries = 1024
+
 var (
 	cpuNSCacheMu sync.Mutex
 	cpuNSCache   = map[string]int64{}
@@ -539,6 +549,16 @@ func cpuRateFor(name string, currentNS int64) float64 {
 	defer cpuNSCacheMu.Unlock()
 	prev, ok := cpuNSCache[name]
 	cpuNSCache[name] = currentNS
+	if len(cpuNSCache) > maxCacheEntries {
+		// Evict an arbitrary entry. map iteration order in Go is random,
+		// which is fine here — we just need to bound the map size.
+		for k := range cpuNSCache {
+			if k != name {
+				delete(cpuNSCache, k)
+				break
+			}
+		}
+	}
 	if !ok || currentNS < prev {
 		// First sample, or the counter reset (service restarted): no rate yet.
 		return -1

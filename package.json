@@ -1,0 +1,8 @@
+{
+  "name": "theta-agent",
+  "version": "2.21.0",
+  "description": "Cross-platform endpoint daemon for the Theta Suite ecosystem",
+  "scripts": {
+    "test": "go test -count=1 ./..."
+  }
+}

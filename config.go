@@ -30,8 +30,11 @@ type Capabilities struct {
 	// false by omission rather than by anyone's decision.
 	WireGuard           *bool `yaml:"wireguard"`
 	ServiceRegistration bool  `yaml:"service_registration"`
+	// Storage gates the signed zpool_scrub command. Default false: a host
+	// without an explicit `storage: true` in agent.yml cannot be sent scrub
+	// commands, even if it holds the signing key.
+	Storage bool `yaml:"storage"`
 }
-
 // SecretTarget maps a local template to a rendered target file and an optional
 // post-render reload command (DESIGN.md §5).
 type SecretTarget struct {
@@ -98,6 +101,12 @@ type Config struct {
 	// config today — see docs/WHITE_LABELING.md for the supported paths.
 	CredentialProviderName string `yaml:"credential_provider_name"`
 	CredentialProviderLogo string `yaml:"credential_provider_logo"`
+
+	// VerboseLogging enables debug-level logging of full remote scripts and
+	// config payloads (arbitrary_bash script content, configure_ldap data, and
+	// similar). Default off: these payloads can hold credentials or sensitive
+	// config, so they are only logged when the operator opts in.
+	VerboseLogging bool `yaml:"verbose_logging"`
 
 	// OrganizationName is pushed by the directory via the WebSocket config
 	// frame. It overrides the hardcoded "Theta Agent" branding in the tray
@@ -255,6 +264,12 @@ func (cm *ConfigManager) PersistEnrollment(token, publicKey string) error {
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
 		return fmt.Errorf("write %s: %w", cm.configPath, err)
 	}
+	// Explicit chmod after write: WriteFile only sets the mode on creation;
+	// if the file already existed with a wider mode (e.g. 0644), this tightens
+	// it to 0600.
+	if err := os.Chmod(cm.configPath, 0600); err != nil {
+		return fmt.Errorf("chmod %s: %w", cm.configPath, err)
+	}
 
 	cfg, err := LoadConfig(cm.configPath)
 	if err != nil {
@@ -277,6 +292,9 @@ func (cm *ConfigManager) PersistAutoVPN(value bool) error {
 	out := setYamlScalarValue(string(raw), "auto_vpn", fmt.Sprintf("%t", value), false)
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
 		return fmt.Errorf("write %s: %w", cm.configPath, err)
+	}
+	if err := os.Chmod(cm.configPath, 0600); err != nil {
+		return fmt.Errorf("chmod %s: %w", cm.configPath, err)
 	}
 
 	cfg, err := LoadConfig(cm.configPath)
@@ -301,6 +319,9 @@ func (cm *ConfigManager) ClearEnrollment() error {
 	out = setYamlScalar(out, "public_key", "")
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
 		return fmt.Errorf("write %s: %w", cm.configPath, err)
+	}
+	if err := os.Chmod(cm.configPath, 0600); err != nil {
+		return fmt.Errorf("chmod %s: %w", cm.configPath, err)
 	}
 
 	cfg, err := LoadConfig(cm.configPath)
@@ -342,12 +363,27 @@ func (s *RegisteredService) UnmarshalYAML(node *yaml.Node) error {
 // SubTypeOr reports the service type, defaulting to "systemd" for legacy
 // entries written before subtypes existed.
 func (s RegisteredService) SubTypeOr(def string) string {
-	if s.SubType != "" {
-		return s.SubType
+	if s := strings.ToLower(strings.TrimSpace(s.SubType)); s != "" {
+		return s
 	}
 	return def
 }
 
+// serviceNamePattern matches valid service names: letters, digits, dot,
+// underscore, at, plus and hyphen, 1-128 chars. Applied on both the WebSocket
+// command path and the CLI persist path so a name from either side can never
+// carry a path separator, newline, or YAML metacharacter into agent.yml or a
+// probe path (see M30).
+var serviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9._@+-]{1,128}$`)
+
+// validateServiceName rejects names that do not match serviceNamePattern. A
+// name failing this check is refused on both the WebSocket and CLI paths.
+func validateServiceName(name string) error {
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid service name %q: must match %s", name, serviceNamePattern.String())
+	}
+	return nil
+}
 // PersistService adds (or, when remove is true, removes) a service of the given
 // subtype in the `services:` list in agent.yml. Like the enrollment/auto_vpn
 // edits it is line-based rather than a YAML round-trip so comments and
@@ -356,6 +392,10 @@ func (s RegisteredService) SubTypeOr(def string) string {
 func (cm *ConfigManager) PersistService(name, subtype string, remove bool) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+
+	if err := validateServiceName(name); err != nil {
+		return err
+	}
 
 	raw, err := os.ReadFile(cm.configPath)
 	if err != nil {
@@ -374,6 +414,9 @@ func (cm *ConfigManager) PersistService(name, subtype string, remove bool) error
 
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
 		return fmt.Errorf("write %s: %w", cm.configPath, err)
+	}
+	if err := os.Chmod(cm.configPath, 0600); err != nil {
+		return fmt.Errorf("chmod %s: %w", cm.configPath, err)
 	}
 
 	cfg, err := LoadConfig(cm.configPath)
@@ -486,7 +529,10 @@ func setYamlScalarValue(doc, key, value string, quote bool) string {
 	}
 	re := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(key) + `[ \t]*:.*$`)
 	if re.MatchString(doc) {
-		return re.ReplaceAllString(doc, line)
+		// ReplaceAllStringFunc avoids $-expansion: the replacement is a
+		// literal string, so a value containing `$1`, `$&`, etc. is written
+		// verbatim instead of being interpreted as a backreference.
+		return re.ReplaceAllStringFunc(doc, func(string) string { return line })
 	}
 	if !strings.HasSuffix(doc, "\n") {
 		doc += "\n"

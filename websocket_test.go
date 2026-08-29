@@ -23,14 +23,22 @@ func testPubKeyB64() string {
 	return base64.StdEncoding.EncodeToString(testPubKey)
 }
 
-// sign mirrors the server's canonicalization (sorted keys, no whitespace, no
-// HTML escaping, `signature` omitted) and adds the signature to the payload.
-func sign(t *testing.T, payload map[string]interface{}) map[string]interface{} {
+// sign mirrors the server's canonicalization and the G-1 signature envelope:
+// keys sorted alphabetically, no whitespace, no HTML escaping, `signature`
+// omitted, and the command TYPE bound in (so a signature for one type can't be
+// replayed as another). It adds the signature to the payload.
+func sign(t *testing.T, msgType string, payload map[string]interface{}) map[string]interface{} {
 	t.Helper()
 	if payload == nil {
 		payload = map[string]interface{}{}
 	}
-	canonical, err := canonicalize(payload)
+	// G-1: the signature covers {type, payload}, so bind type into the
+	// canonical bytes exactly as verifySignature does.
+	envelope := map[string]interface{}{"type": msgType}
+	for k, v := range payload {
+		envelope[k] = v
+	}
+	canonical, err := canonicalize(envelope)
 	if err != nil {
 		t.Fatalf("canonicalize: %v", err)
 	}
@@ -207,6 +215,7 @@ func TestHandleCommand(t *testing.T) {
 		{
 			name: "service_restart allowed",
 			cfg: &Config{
+				PublicKey: testPubKeyB64(),
 				Capabilities: Capabilities{
 					ServiceControl: []string{"nginx"},
 				},
@@ -217,6 +226,7 @@ func TestHandleCommand(t *testing.T) {
 					"service": "nginx",
 				},
 			},
+			signed:         true,
 			expectedStatus: "ok",
 			expectedCmd:    []string{"systemctl", "restart", "nginx"},
 		},
@@ -343,6 +353,38 @@ func TestHandleCommand(t *testing.T) {
 			},
 			expectedStatus: "error",
 		},
+		{
+			name: "zpool_scrub allowed",
+			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
+				Capabilities: Capabilities{Storage: true},
+			},
+			msg: WSMessage{
+				Type: "zpool_scrub",
+				Payload: map[string]interface{}{
+					"pool": "tank",
+				},
+			},
+			signed:         true,
+			expectedStatus: "ok",
+			expectedCmd:    []string{"zpool", "scrub", "tank"},
+		},
+		{
+			name: "zpool_scrub denied (no storage capability)",
+			cfg: &Config{
+				PublicKey:    testPubKeyB64(),
+				Capabilities: Capabilities{Storage: false},
+			},
+			msg: WSMessage{
+				Type: "zpool_scrub",
+				Payload: map[string]interface{}{
+					"pool": "tank",
+				},
+			},
+			signed:         true,
+			expectedStatus: "error",
+			expectedCmd:    nil,
+		},
 	}
 
 	for _, tc := range tests {
@@ -365,7 +407,7 @@ func TestHandleCommand(t *testing.T) {
 
 			msg := tc.msg
 			if tc.signed {
-				msg.Payload = sign(t, msg.Payload)
+			msg.Payload = sign(t, msg.Type, msg.Payload)
 			}
 			handleCommand(cm, msg, mockConn, mockExec, nil)
 
@@ -427,7 +469,7 @@ func TestHandleCommand(t *testing.T) {
 // one executed reboot / configure_ldap / arbitrary_bash unverified.
 func TestVerifySignatureFailsClosedWithoutPublicKey(t *testing.T) {
 	cfg := &Config{} // no PublicKey
-	msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, map[string]interface{}{"script": "uptime"})}
+	msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, "arbitrary_bash", map[string]interface{}{"script": "uptime"})}
 	if verifySignature(cfg, msg) {
 		t.Fatal("verifySignature accepted a command with no public_key configured")
 	}
@@ -436,7 +478,7 @@ func TestVerifySignatureFailsClosedWithoutPublicKey(t *testing.T) {
 func TestVerifySignatureRejectsWrongKey(t *testing.T) {
 	otherPub, _, _ := ed25519.GenerateKey(nil)
 	cfg := &Config{PublicKey: base64.StdEncoding.EncodeToString(otherPub)}
-	msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, map[string]interface{}{"script": "uptime"})}
+	msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, "arbitrary_bash", map[string]interface{}{"script": "uptime"})}
 	if verifySignature(cfg, msg) {
 		t.Fatal("verifySignature accepted a signature from a different key")
 	}
@@ -444,7 +486,7 @@ func TestVerifySignatureRejectsWrongKey(t *testing.T) {
 
 func TestVerifySignatureRejectsTamperedPayload(t *testing.T) {
 	cfg := &Config{PublicKey: testPubKeyB64()}
-	payload := sign(t, map[string]interface{}{"script": "uptime"})
+	payload := sign(t, "arbitrary_bash", map[string]interface{}{"script": "uptime"})
 	payload["script"] = "rm -rf /" // swap the script, keep the signature
 	if verifySignature(cfg, WSMessage{Type: "arbitrary_bash", Payload: payload}) {
 		t.Fatal("verifySignature accepted a payload modified after signing")
@@ -463,7 +505,7 @@ func TestVerifySignatureAcceptsShellMetacharacters(t *testing.T) {
 		"grep -c . < /etc/passwd",
 		"a=1 && b=2 && echo \"$a<$b\" > /dev/null",
 	} {
-		msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, map[string]interface{}{"script": script})}
+		msg := WSMessage{Type: "arbitrary_bash", Payload: sign(t, "arbitrary_bash", map[string]interface{}{"script": script})}
 		if !verifySignature(cfg, msg) {
 			t.Errorf("verifySignature rejected a correctly signed script: %q", script)
 		}
@@ -613,10 +655,10 @@ func TestUpdateBinaryNotGatedOnArbitraryBash(t *testing.T) {
 	mockConn := &MockConn{}
 	msg := WSMessage{
 		Type: "update_binary",
-		Payload: sign(t, map[string]interface{}{
-			"url":    srv.URL,
-			"sha256": sum,
-		}),
+		Payload: sign(t, "update_binary", map[string]interface{}{
+ 			"url":    srv.URL,
+ 			"sha256": sum,
+ 		}),
 	}
 	handleCommand(cm, msg, mockConn, &MockExecutor{}, nil)
 

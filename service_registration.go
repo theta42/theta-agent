@@ -481,7 +481,11 @@ func pushServiceRegistration(cm *ConfigManager, name, subtype string, remove boo
 	// short-lived one-shot WebSocket: connect, send, wait for a response frame,
 	// then close. 15s covers a slow directory.
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
-	conn, _, err := dialer.Dial(serviceWSURL(cfg), nil)
+	wsURL, err := serviceWSURL(cfg)
+	if err != nil {
+		return err
+	}
+	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
@@ -529,10 +533,13 @@ func pushServiceRegistration(cm *ConfigManager, name, subtype string, remove boo
 }
 
 // serviceWSURL builds the same /api/agent/ws?token=... URL the daemon uses.
-func serviceWSURL(cfg *Config) string {
+func serviceWSURL(cfg *Config) (string, error) {
 	serverURL := strings.Replace(cfg.ServerURL, "http://", "ws://", 1)
 	serverURL = strings.Replace(serverURL, "https://", "wss://", 1)
-	u, _ := url.Parse(serverURL)
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return "", fmt.Errorf("parse server_url %q: %w", cfg.ServerURL, err)
+	}
 	u.Path = "/api/agent/ws"
 	q := url.Values{}
 	q.Set("token", cfg.Credential())
@@ -540,5 +547,5 @@ func serviceWSURL(cfg *Config) string {
 		q.Set("hostname", hn)
 	}
 	u.RawQuery = q.Encode()
-	return u.String()
+	return u.String(), nil
 }
