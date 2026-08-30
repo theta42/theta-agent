@@ -164,9 +164,33 @@ func tunnelShouldBeUp(isHome bool) bool {
 	return !isHome || remoteExitSelected()
 }
 
+// TriggerTrayStatusPush gathers current state and updates the tray status.
+func TriggerTrayStatusPush() {
+	homeState.mu.RLock()
+	agentIP := homeState.agentPublicIP
+	homeIP := homeState.homePublicIP
+	vpn := homeState.vpnActive
+	autoVPN := homeState.autoVPN
+	isHome := homeState.isHome
+	homeState.mu.RUnlock()
+
+	siteName := "home"
+	if currentCM != nil {
+		cfg := currentCM.Get()
+		if cfg != nil && cfg.Location != "" {
+			siteName = cfg.Location
+		}
+	}
+	UpdateTrayStatus(true, isHome, agentIP, homeIP, vpn, autoVPN, siteName)
+}
+
 // wantWireGuardUp answers "should the tunnel be running right now" for callers
 // that are not the monitor loop -- chiefly a pushed peer config.
 func wantWireGuardUp() bool {
+	// A remote exit explicitly selected by the user means the tunnel should be running.
+	if remoteExitSelected() {
+		return true
+	}
 	// Auto-VPN off means the user drives the tunnel by hand. Refresh one that
 	// is already up so a new exit takes effect, but never raise one they have
 	// deliberately left down.
