@@ -435,7 +435,8 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 	case "config":
 		// A config frame carrying credentials means the server accepted our
 		// join key and enrolled this host.
-		if enrolled, _ := msg.Payload["enrolled"].(bool); enrolled {
+		enrolled, _ := msg.Payload["enrolled"].(bool)
+		if enrolled {
 			token, _ := msg.Payload["auth_token"].(string)
 			pubKey, _ := msg.Payload["public_key"].(string)
 			if err := cm.PersistEnrollment(token, pubKey); err != nil {
@@ -444,8 +445,6 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			} else {
 				log.Printf("Enrolled with Theta Directory. Credentials written to %s; the join key is no longer needed.", cm.configPath)
 			}
-			sendResponse("ok", "enrollment stored")
-			return
 		}
 		// Home-detection inputs pushed by the directory. site_public_ip is the
 		// weaker of the two (CGNAT and multi-WAN sites both break the
@@ -466,7 +465,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 		debugf("config payload (full): %v", msg.Payload)
 		log.Printf("Received config payload: %d fields", len(msg.Payload))
-		sendResponse("ok", "Configuration received")
+		if enrolled {
+			sendResponse("ok", "enrollment stored")
+		} else {
+			sendResponse("ok", "Configuration received")
+		}
 	case "reboot":
 		if !verifySignature(cfg, msg) {
 			sendResponse("error", "signature verification failed")

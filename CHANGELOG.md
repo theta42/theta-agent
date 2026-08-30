@@ -1,3 +1,10 @@
+## [v2.21.3] - 2026-08-30
+
+### Fixed
+- **Passive mDNS Home Sensing**: Enabled background mDNS browsing loop unconditionally so home detection can sense the local site broadcast domain on the LAN without requiring `local_discovery: true` (hosts override).
+- **Config Payload Processing**: Fixed early return on `enrolled: true` in the WebSocket config handler, ensuring `site_lan_endpoint`, `site_public_ip`, and `organization_name` are extracted and applied on initial enrollment.
+- **Multiple LAN Endpoints Support**: `homeEndpoints` now supports comma-separated LAN endpoint lists, probing both the stack host reverse proxy and local DNS resolver.
+
 ## [v2.21.2] - 2026-08-30
 
 ### Fixed

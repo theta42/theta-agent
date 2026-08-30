@@ -118,7 +118,12 @@ func resolvesPrivate(hostport string) bool {
 func homeEndpoints(cfg *Config, lanEndpoint string) []string {
 	var out []string
 	if lanEndpoint != "" {
-		out = append(out, withDefaultPort(lanEndpoint, "443"))
+		for _, part := range strings.Split(lanEndpoint, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, withDefaultPort(part, "443"))
+			}
+		}
 	}
 	// hostFromURL (local_discovery.go) returns the bare hostname; the port
 	// is supplied below.
@@ -126,6 +131,19 @@ func homeEndpoints(cfg *Config, lanEndpoint string) []string {
 		out = append(out, withDefaultPort(host, "443"))
 	}
 	return out
+}
+
+func isPushedLanEndpoint(ep, lanEndpoint string) bool {
+	if lanEndpoint == "" {
+		return false
+	}
+	for _, part := range strings.Split(lanEndpoint, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" && ep == withDefaultPort(part, "443") {
+			return true
+		}
+	}
+	return false
 }
 
 // withDefaultPort appends a port when the endpoint carries none. Bare IPv6 is
@@ -207,7 +225,7 @@ func detectHome(cfg *Config, agentPublicIP, homePublicIP, lanEndpoint string, co
 		// A pushed LAN endpoint is home-only by definition. Anything else has
 		// to demonstrate it: a private address, whether written literally or
 		// arrived at by resolution.
-		homeOnly := (lanEndpoint != "" && ep == withDefaultPort(lanEndpoint, "443")) ||
+		homeOnly := isPushedLanEndpoint(ep, lanEndpoint) ||
 			isPrivateHost(ep) || resolvesPrivate(ep)
 		if homeOnly && probeReachable(ep) {
 			return true
