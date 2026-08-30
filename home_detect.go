@@ -18,18 +18,19 @@ import (
 )
 
 var homeState struct {
-	mu              sync.RWMutex
-	agentPublicIP   string
-	homePublicIP    string // set by directory config push
-	lanEndpoint     string // LAN-only endpoint pushed by the directory, if any
-	vpnActive       bool
-	autoVPN         bool
-	exits           []TrayExit // exits this device may choose (from the directory)
-	currentExit     *int       // nil = local breakout
-	homeSiteID      int        // this device's own site, from enrolment
-	isHome          bool       // last answer from detectHome
-	homeKnown       bool       // whether isHome has been computed even once
-	organizationName string   // white-label name pushed by the directory
+	mu               sync.RWMutex
+	agentPublicIP    string
+	homePublicIP     string // set by directory config push
+	lanEndpoint      string // LAN-only endpoint pushed by the directory, if any
+	siteName         string // site name pushed by the directory
+	vpnActive        bool
+	autoVPN          bool
+	exits            []TrayExit // exits this device may choose (from the directory)
+	currentExit      *int       // nil = local breakout
+	homeSiteID       int        // this device's own site, from enrolment
+	isHome           bool       // last answer from detectHome
+	homeKnown        bool       // whether isHome has been computed even once
+	organizationName string     // white-label name pushed by the directory
 }
 
 // publicIPProviders are tried in order until one succeeds.
@@ -164,6 +165,28 @@ func tunnelShouldBeUp(isHome bool) bool {
 	return !isHome || remoteExitSelected()
 }
 
+// SetSiteName records the site name pushed by the directory.
+func SetSiteName(name string) {
+	homeState.mu.Lock()
+	homeState.siteName = name
+	homeState.mu.Unlock()
+}
+
+func siteName() string {
+	homeState.mu.RLock()
+	defer homeState.mu.RUnlock()
+	if homeState.siteName != "" {
+		return homeState.siteName
+	}
+	if currentCM != nil {
+		cfg := currentCM.Get()
+		if cfg != nil && cfg.Location != "" {
+			return cfg.Location
+		}
+	}
+	return "home"
+}
+
 // TriggerTrayStatusPush gathers current state and updates the tray status.
 func TriggerTrayStatusPush() {
 	homeState.mu.RLock()
@@ -174,14 +197,7 @@ func TriggerTrayStatusPush() {
 	isHome := homeState.isHome
 	homeState.mu.RUnlock()
 
-	siteName := "home"
-	if currentCM != nil {
-		cfg := currentCM.Get()
-		if cfg != nil && cfg.Location != "" {
-			siteName = cfg.Location
-		}
-	}
-	UpdateTrayStatus(true, isHome, agentIP, homeIP, vpn, autoVPN, siteName)
+	UpdateTrayStatus(true, isHome, agentIP, homeIP, vpn, autoVPN, siteName())
 }
 
 // wantWireGuardUp answers "should the tunnel be running right now" for callers
