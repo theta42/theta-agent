@@ -1,3 +1,9 @@
+## [v2.21.5] - 2026-08-30
+
+### Fixed
+- **Site Name and Brand Synchronization**: Added `site_name` extraction and dynamic site name resolution to `homeState`, automatically reflecting the home directory site branding in the desktop tray status.
+- **Config Message Tray Refresh**: Triggered immediate tray status recalculation whenever the directory pushes initial/reconnected config payloads.
+
 ## [v2.21.4] - 2026-08-30
 
 ### Fixed

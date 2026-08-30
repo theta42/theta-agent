@@ -463,6 +463,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			SetOrganizationName(orgName)
 			log.Printf("[branding] organization name: %s", orgName)
 		}
+		if sName, ok := msg.Payload["site_name"].(string); ok && sName != "" {
+			SetSiteName(sName)
+			log.Printf("[branding] site name: %s", sName)
+		}
+		TriggerTrayStatusPush()
 		debugf("config payload (full): %v", msg.Payload)
 		log.Printf("Received config payload: %d fields", len(msg.Payload))
 		if enrolled {
