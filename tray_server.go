@@ -104,20 +104,20 @@ func (ts *trayServer) handleConn(conn net.Conn) {
 // peerEuid lives in tray_peercred_linux.go (SO_PEERCRED) and
 // tray_peercred_other.go (fallbacks).
 
-// isMutatingTrayCommand reports whether a tray IPC command changes agent
-// state. Those require the peer to be root (euid 0) — the CLI runs as root;
-// the tray runs as the logged-in user and may only read status, which the
-// 0666 socket already allows.
-func isMutatingTrayCommand(cmd string) bool {
+// isPrivilegedAdminCommand reports whether a command modifies root daemon
+// credentials or services (CLI operations). These require euid 0 (root).
+// User-facing tray operations (set_auto_vpn, vpn_connect, vpn_disconnect, set_exit)
+// are allowed from the interactive desktop user session.
+func isPrivilegedAdminCommand(cmd string) bool {
 	switch cmd {
-	case "set_auto_vpn", "vpn_connect", "vpn_disconnect", "reinit", "set_exit", "register_service", "unregister_service":
+	case "reinit", "register_service", "unregister_service":
 		return true
 	}
 	return false
 }
 
 func (ts *trayServer) handleCommand(conn net.Conn, cmd TrayCommand) {
-	if isMutatingTrayCommand(cmd.Command) && peerEuid(conn) != 0 {
+	if isPrivilegedAdminCommand(cmd.Command) && peerEuid(conn) != 0 {
 		log.Printf("[tray-ipc] rejected %s: peer euid %d is not root", cmd.Command, peerEuid(conn))
 		return
 	}
@@ -133,15 +133,22 @@ func (ts *trayServer) handleCommand(conn net.Conn, cmd TrayCommand) {
 			}
 		}
 		log.Printf("[tray-ipc] auto_vpn set to %v", cmd.Value)
+		TriggerTrayStatusPush()
 	case "vpn_connect":
 		log.Printf("[tray-ipc] VPN connect requested")
 		if err := defaultPlatformOps.ConnectWireGuard(); err != nil {
 			log.Printf("[tray-ipc] VPN connect failed: %v", err)
+		} else {
+			SetVPNActive(true)
+			TriggerTrayStatusPush()
 		}
 	case "vpn_disconnect":
 		log.Printf("[tray-ipc] VPN disconnect requested")
 		if err := defaultPlatformOps.DisconnectWireGuard(); err != nil {
 			log.Printf("[tray-ipc] VPN disconnect failed: %v", err)
+		} else {
+			SetVPNActive(false)
+			TriggerTrayStatusPush()
 		}
 	case "reinit":
 		log.Printf("[tray-ipc] clearing enrollment (re-enroll requested)")
@@ -171,6 +178,7 @@ func (ts *trayServer) handleCommand(conn net.Conn, cmd TrayCommand) {
 		// Refresh so the tray's checkmark reflects what the directory now
 		// holds, rather than what we optimistically assumed.
 		refreshMeshExits(cfg)
+		TriggerTrayStatusPush()
 	case "register_service", "unregister_service":
 		// Sent by `theta-agent register/unregister` (the CLI), not the tray.
 		// The CLI writes agent.yml itself and asks the daemon to push the

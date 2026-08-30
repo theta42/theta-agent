@@ -1,3 +1,10 @@
+## [v2.21.4] - 2026-08-30
+
+### Fixed
+- **Tray IPC Permissions**: Fixed tray IPC peer credential gating (`peer euid != 0`) that erroneously blocked the desktop user from disconnecting VPN, toggling auto-vpn, or changing internet exits from the tray UI. Root check is now strictly reserved for privileged admin CLI commands (`reinit`, `register_service`, `unregister_service`).
+- **Remote Exit & Auto-VPN Tunnel Coordination**: Enabled explicit remote exit selection in `wantWireGuardUp()` so selecting a remote exit brings up the tunnel regardless of auto-vpn preference, while selecting local breakout cleanly disconnects and keeps the tunnel down at home.
+- **Immediate Tray UI Synchronization**: Added proactive status broadcast upon all tray commands (`set_auto_vpn`, `vpn_connect`, `vpn_disconnect`, `set_exit`) and config pushes so the UI immediately reflects current WireGuard state.
+
 ## [v2.21.3] - 2026-08-30
 
 ### Fixed

@@ -750,7 +750,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 		if !wantWireGuardUp() {
 			log.Printf("[mesh] peer config stored; leaving the tunnel down (at home, no remote exit selected)")
-			SetVPNActive(defaultPlatformOps.WireGuardState())
+			if defaultPlatformOps.WireGuardState() {
+				_ = defaultPlatformOps.DisconnectWireGuard()
+			}
+			SetVPNActive(false)
+			TriggerTrayStatusPush()
 			sendResponse("ok", "wireguard config stored")
 			return
 		}
@@ -761,6 +765,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		SetVPNActive(true)
+		TriggerTrayStatusPush()
 		sendResponse("ok", "wireguard applied")
 	case "wireguard_remove":
 		if !verifySignature(cfg, msg) {

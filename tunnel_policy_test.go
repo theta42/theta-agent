@@ -127,6 +127,38 @@ func TestWantWireGuardUpWithAutoVPNOff(t *testing.T) {
 	}
 }
 
+func TestWantWireGuardUpWithAutoVPNOffAndRemoteExitSelected(t *testing.T) {
+	resetTunnelPolicyState(t)
+	SetAutoVPN(false)
+	SetHomeState(true)
+	SetMeshIdentity(1, intPtr(2)) // Remote exit 2 selected
+
+	prev := defaultPlatformOps
+	defer func() { defaultPlatformOps = prev }()
+
+	defaultPlatformOps = &linuxPlatformOps{exec: &failingExecutor{}, tunnelName: "theta-mesh"}
+	if !wantWireGuardUp() {
+		t.Error("remote exit selected by user should raise tunnel even when auto-vpn is off")
+	}
+}
+
+func TestPrivilegedAdminCommandGating(t *testing.T) {
+	cases := map[string]bool{
+		"vpn_connect":        false,
+		"vpn_disconnect":     false,
+		"set_auto_vpn":       false,
+		"set_exit":           false,
+		"reinit":             true,
+		"register_service":   true,
+		"unregister_service": true,
+	}
+	for cmd, wantPriv := range cases {
+		if got := isPrivilegedAdminCommand(cmd); got != wantPriv {
+			t.Errorf("isPrivilegedAdminCommand(%q) = %v, want %v", cmd, got, wantPriv)
+		}
+	}
+}
+
 // A pushed config must always land on disk. Whether it is RUN is a separate
 // decision -- applying unconditionally meant a push to a host sitting at home
 // brought the tunnel up and the next monitor tick tore it back down.
