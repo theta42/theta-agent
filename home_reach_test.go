@@ -68,6 +68,17 @@ func TestDetectHomeReachableLanEndpointWins(t *testing.T) {
 	}
 }
 
+func TestDetectHomeMultipleLanEndpointsSecondWins(t *testing.T) {
+	addr, stop := listenLocal(t)
+	defer stop()
+	cfg := &Config{ServerURL: "wss://sso.example.com"}
+	// First LAN endpoint is unroutable, second is live
+	combined := "192.0.2.1:9, " + addr
+	if !detectHome(cfg, "9.9.9.9", "1.2.3.4", combined, true) {
+		t.Fatalf("second reachable LAN endpoint in list should mean home")
+	}
+}
+
 func TestDetectHomeUnreachableLanEndpointFallsBackToPublicIP(t *testing.T) {
 	cfg := &Config{ServerURL: "wss://sso.example.com"}
 	if !detectHome(cfg, "1.2.3.4", "1.2.3.4", "192.0.2.1:9", true) {

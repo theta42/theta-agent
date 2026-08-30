@@ -47,31 +47,20 @@ func localDiscoveryEnabled(cfg *Config) bool {
 
 func StartLocalDiscovery(cm *ConfigManager) {
 	cfg := cm.Get()
-	if !localDiscoveryEnabled(cfg) {
-		log.Printf("[local-discovery] disabled in agent.yml")
-		return
-	}
 	targetHost := hostFromURL(cfg.ServerURL)
 	if targetHost == "" {
 		log.Printf("[local-discovery] could not parse a hostname out of server_url %q -- disabled", cfg.ServerURL)
 		return
 	}
 
-	log.Printf("[local-discovery] enabled, watching for a local announcement fronting %s", targetHost)
-
-	// Start from the machine's real DNS truth. A managed block left behind by a
-	// previous run is our own state, not the operator's, and we have no reason
-	// yet to believe it is still correct -- the address may have moved, the
-	// certificate may have changed, or (the case that produced this) a previous
-	// version may have written a block that breaks TLS for the whole host.
-	//
-	// Clearing it also un-fools the "already resolves to the discovered IP, no
-	// override needed" shortcut below, which reads /etc/hosts through the
-	// resolver: with a stale block still in place that check compares our own
-	// previous answer against itself, concludes there is nothing to do, and
-	// leaves the block there permanently.
-	if err := applyHostsOverride(map[string]string{}); err != nil {
-		log.Printf("[local-discovery] could not clear a previous hosts override: %v", err)
+	hostsOverrideActive := localDiscoveryEnabled(cfg)
+	if hostsOverrideActive {
+		log.Printf("[local-discovery] hosts override enabled, watching for a local announcement fronting %s", targetHost)
+		if err := applyHostsOverride(map[string]string{}); err != nil {
+			log.Printf("[local-discovery] could not clear a previous hosts override: %v", err)
+		}
+	} else {
+		log.Printf("[local-discovery] passive mDNS sensing active for home detection (hosts override disabled in agent.yml)")
 	}
 
 	currentlyOverridden := false
@@ -86,6 +75,11 @@ func StartLocalDiscovery(cm *ConfigManager) {
 		// of being on that site's LAN, and it holds whether or not an override
 		// ends up being applied or is even wanted. home_reach.go consumes it.
 		setLocalSiteSeen(ip != "")
+
+		if !hostsOverrideActive {
+			time.Sleep(mdnsPollInterval)
+			continue
+		}
 
 		switch {
 		case ip != "" && !currentlyOverridden:
