@@ -1,3 +1,9 @@
+## [v2.21.2] - 2026-08-30
+
+### Fixed
+- **Ignore `unknown` / `none` / `default` location values when sending site hint**: When `location` in `agent.yml` is set to `unknown` or `default` (from default installation), `resolveSiteHint` now treats it as no site specified rather than sending `?site=unknown` to the directory during self-enrollment.
+- **Default install configuration**: `install.sh` now sets `location: "default"` instead of `location: "unknown"` and ignores placeholder locations.
+
 ## [v2.21.1] - 2026-08-29
 
 ### Fixed

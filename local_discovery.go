@@ -373,7 +373,7 @@ func txtField(entry *mdns.ServiceEntry, key string) string {
 // enabled: that flag gates rewriting /etc/hosts system-wide, which is a much
 // bigger thing to consent to than reading a hostname off the wire once.
 func resolveSiteHint(cfg *Config) string {
-	if s := strings.TrimSpace(cfg.Location); s != "" && s != "default" {
+	if s := strings.TrimSpace(cfg.Location); s != "" && s != "default" && s != "unknown" && s != "none" {
 		return s
 	}
 

@@ -365,7 +365,7 @@ server_url: "$URL"
 auth_token: "$TOKEN"
 join_key: "$JOIN_KEY"
 public_key: "$PUBLIC_KEY"
-location: "unknown"
+location: "default"
 services: []
 capabilities:
   telemetry: true
