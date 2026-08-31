@@ -475,9 +475,13 @@ if getent group theta-secrets >/dev/null 2>&1; then
 elif getent group theta >/dev/null 2>&1; then
   SECRETS_GROUP="theta"
 fi
+if [ "$SECRETS_GROUP" != "root" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  usermod -aG "$SECRETS_GROUP" "$SUDO_USER" 2>/dev/null || true
+  log "Added user $SUDO_USER to $SECRETS_GROUP group."
+fi
 chown -R "root:$SECRETS_GROUP" "$CONFIG_DIR" 2>/dev/null || true
-chmod 750 "$CONFIG_DIR"
-chmod 640 "$CONFIG_FILE"
+chmod 755 "$CONFIG_DIR"
+chmod 644 "$CONFIG_FILE"
 
 # 4c. Setup Desktop Tray Icon companion
 TRAY_BINARY_NAME="theta-agent-tray-${OS_NAME}-${ARCH_NAME}"
@@ -671,6 +675,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=$BIN_PATH
+ExecStopPost=-/usr/bin/wg-quick down theta-mesh
 Restart=always
 RestartSec=5
 SyslogIdentifier=theta-agent

@@ -130,4 +130,13 @@ func runAgent() {
 	<-agentStopCh
 
 	fmt.Println("Shutting down Theta Agent...")
+
+	// Clean up WireGuard mesh interface if active so the host does not retain
+	// stale routes or interfaces when the agent service is stopped.
+	if defaultPlatformOps != nil && defaultPlatformOps.WireGuardState() {
+		log.Println("[mesh] Tearing down WireGuard interface on shutdown...")
+		if err := defaultPlatformOps.RemoveWireGuard(); err != nil {
+			log.Printf("[mesh] Error tearing down WireGuard on shutdown: %v", err)
+		}
+	}
 }
