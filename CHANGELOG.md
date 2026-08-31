@@ -1,3 +1,10 @@
+## [v2.21.6] - 2026-08-30
+
+### Fixed
+- **WireGuard Interface Teardown on Daemon Shutdown**: Added active WireGuard cleanup (`defaultPlatformOps.RemoveWireGuard()`) when daemon receives SIGTERM/SIGINT or stops, preventing lingering kernel interfaces and broken default routes after the agent is stopped.
+- **Systemd Service Post-Stop Cleanup**: Added `ExecStopPost=-/usr/bin/wg-quick down theta-mesh` to `theta-agent.service` unit definition.
+- **Desktop Companion Config Access**: Updated `install.sh` to add the active desktop user (`$SUDO_USER`) to the `theta-secrets` group and set configuration file permissions so non-root desktop applications and "Open Config" in the tray companion work seamlessly.
+
 ## [v2.21.5] - 2026-08-30
 
 ### Fixed
