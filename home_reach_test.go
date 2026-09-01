@@ -140,7 +140,7 @@ func TestDetectHomePrivateDirectoryAddress(t *testing.T) {
 func resetLocalSiteSeen(t *testing.T) {
 	t.Helper()
 	localSite.mu.Lock()
-	localSite.seen = false
+	localSite.lastPositive = time.Time{}
 	localSite.polled = time.Time{}
 	localSite.mu.Unlock()
 }
@@ -174,6 +174,26 @@ func TestDetectHomeMdnsAbsenceDoesNotForceHome(t *testing.T) {
 	}
 }
 
+// The bug this replaces: setLocalSiteSeen mirrored the raw result of the last
+// poll, so a single dropped mDNS response -- ordinary WiFi multicast loss,
+// not a network change -- flipped "home" to "away" immediately. The 60s
+// home-monitor tick sometimes landed on exactly that transient miss (mDNS
+// polls every 30s), flashing the tray yellow for one cycle before the next
+// poll found the site again and it flipped back to green. No network change
+// ever happened; only a single missed multicast response did.
+func TestDetectHomeSingleMissedPollDoesNotFlipAway(t *testing.T) {
+	resetLocalSiteSeen(t)
+	defer resetLocalSiteSeen(t)
+
+	setLocalSiteSeen(true)
+	setLocalSiteSeen(false) // one transient miss right after
+
+	cfg := &Config{ServerURL: "wss://sso.example.com"}
+	if !detectHome(cfg, "", "", "", true) {
+		t.Fatalf("a single missed poll right after a positive sighting must not read as away")
+	}
+}
+
 // A wedged or disabled discovery loop must not answer the question. Its last
 // reading goes stale and detection falls through to the weaker signals, rather
 // than pinning the agent to whatever it happened to see hours ago -- the same
@@ -183,7 +203,7 @@ func TestDetectHomeStaleMdnsSightingIsIgnored(t *testing.T) {
 	defer resetLocalSiteSeen(t)
 
 	localSite.mu.Lock()
-	localSite.seen = true
+	localSite.lastPositive = time.Now().Add(-2 * localSiteSeenTTL)
 	localSite.polled = time.Now().Add(-2 * localSiteSeenTTL)
 	localSite.mu.Unlock()
 
@@ -193,6 +213,27 @@ func TestDetectHomeStaleMdnsSightingIsIgnored(t *testing.T) {
 	cfg := &Config{ServerURL: "wss://sso.example.com"}
 	if detectHome(cfg, "9.9.9.9", "1.2.3.4", "", true) {
 		t.Fatalf("a stale sighting must not decide the answer")
+	}
+}
+
+// Distinguishes "the site hasn't been seen in a while" from "the loop itself
+// is dead": here the loop is still polling (fresh), but the last positive
+// sighting has aged out, so the answer must fall through rather than trust it.
+func TestDetectHomeSustainedAbsenceMeansAway(t *testing.T) {
+	resetLocalSiteSeen(t)
+	defer resetLocalSiteSeen(t)
+
+	localSite.mu.Lock()
+	localSite.lastPositive = time.Now().Add(-2 * localSiteSeenTTL)
+	localSite.polled = time.Now()
+	localSite.mu.Unlock()
+
+	if seen, fresh := localSiteSeen(); seen || !fresh {
+		t.Fatalf("an aged-out sighting from a live loop must be seen=false fresh=true (seen=%v fresh=%v)", seen, fresh)
+	}
+	cfg := &Config{ServerURL: "wss://sso.example.com"}
+	if detectHome(cfg, "9.9.9.9", "1.2.3.4", "", true) {
+		t.Fatalf("a sighting that expired well past the TTL must not decide the answer")
 	}
 }
 

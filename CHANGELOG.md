@@ -1,3 +1,9 @@
+## [v2.21.7] - 2026-09-01
+
+### Fixed
+- **Desktop Tray Flapping Between Home and Away With No Network Change**: `localSiteSeen()` mirrored the raw result of the single most recent 30s mDNS poll, so one dropped multicast response (ordinary WiFi driver power-save / IGMP snooping loss, unrelated to which network the host is on) instantly flipped cached "home" state to "away." If the 60s home-monitor tick sampled during that transient gap, it pushed a yellow tray update that self-corrected on the next tick 30-60s later — a visible flap with no underlying network change. The last *positive* sighting is now tracked separately from the last poll, so a single missed poll no longer clears it; sustained absence (site actually gone) still reads as away within the existing 90s window.
+- **WireGuard Tray State Stale After Remote `wireguard_remove`**: The `wireguard_remove` WebSocket command cleared `VPNActive` but, unlike `wireguard_apply`, never triggered an immediate tray status push — so the tray could show a stale VPN-active state for up to 60s after a directory-initiated tunnel removal.
+
 ## [v2.21.6] - 2026-08-30
 
 ### Fixed

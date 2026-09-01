@@ -789,6 +789,7 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 		SetVPNActive(false)
+		TriggerTrayStatusPush()
 		sendResponse("ok", "wireguard removed")
 	case "arbitrary_bash":
 		if !verifySignature(cfg, msg) {
