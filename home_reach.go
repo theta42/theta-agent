@@ -47,36 +47,51 @@ const homeReachTimeout = 2 * time.Second
 // not run yet, or has wedged, a stale "seen" must not pin the agent to home
 // the way the old `homePublicIP == ""` clause did -- staleness falls through
 // to the weaker signals below rather than answering.
+//
+// lastPositive and polled are tracked separately on purpose. A single missed
+// mDNS response is normal WiFi noise (driver power-save and IGMP snooping
+// both drop multicast for reasons that have nothing to do with which network
+// you're on) -- an agent that mirrored the raw per-poll result flipped home
+// to away on every such miss and back again ~30s later, flapping the tray
+// with no actual network change. polled tracks "is the loop still alive at
+// all" (any poll, hit or miss); lastPositive tracks "was the site actually
+// seen recently" and survives a miss or two before it goes stale.
 var localSite struct {
-	mu     sync.RWMutex
-	seen   bool
-	polled time.Time
+	mu           sync.RWMutex
+	lastPositive time.Time
+	polled       time.Time
 }
 
-// localSiteSeenTTL is how long a sighting stays authoritative. Two poll
-// intervals plus slack: one missed poll is normal jitter, a longer gap means
-// the loop is not running and its answer should not be trusted.
+// localSiteSeenTTL bounds both how long a positive sighting stays
+// authoritative and how long the poll loop may go quiet before its answer is
+// distrusted. Three poll intervals: a longer gap than that means either the
+// site really is gone or the loop itself is not running, neither of which
+// should be masked.
 const localSiteSeenTTL = 3 * mdnsPollInterval
 
 // setLocalSiteSeen records the result of one discovery poll. Called by
 // StartLocalDiscovery on every cycle, whether or not it acts on the result.
 func setLocalSiteSeen(seen bool) {
 	localSite.mu.Lock()
-	localSite.seen = seen
 	localSite.polled = time.Now()
+	if seen {
+		localSite.lastPositive = localSite.polled
+	}
 	localSite.mu.Unlock()
 }
 
-// localSiteSeen reports whether the site answered on this link recently.
-// The second return distinguishes "polled, and it was absent" from "no fresh
-// poll to go on", which the caller needs in order to keep falling through.
+// localSiteSeen reports whether the site has answered on this link recently
+// enough to trust. The second return distinguishes "the loop is alive" from
+// "no fresh poll to go on", which the caller needs in order to keep falling
+// through to weaker signals.
 func localSiteSeen() (seen, fresh bool) {
 	localSite.mu.RLock()
 	defer localSite.mu.RUnlock()
 	if localSite.polled.IsZero() || time.Since(localSite.polled) > localSiteSeenTTL {
 		return false, false
 	}
-	return localSite.seen, true
+	seen = !localSite.lastPositive.IsZero() && time.Since(localSite.lastPositive) <= localSiteSeenTTL
+	return seen, true
 }
 
 // resolvesPrivate reports whether a hostname currently resolves to an
