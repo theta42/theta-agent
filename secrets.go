@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -27,8 +28,10 @@ import (
 
 var baoRe = regexp.MustCompile(`\{\{\s*bao\s+"([^"]+)"\s*\}\}`)
 
-// renderSecrets renders every configured secret template. Called on a
-// `render_secrets` command (signed) and on boot.
+// renderSecrets renders every configured secret template. Called on every
+// WebSocket (re)connect, to repair a target that drifted while the agent was
+// offline (see connectWebSocket), and on an operator's signed
+// `render_secrets` command.
 func renderSecrets(cfg *Config, exec Executor) error {
 	if len(cfg.Secrets) == 0 {
 		return nil
@@ -83,6 +86,25 @@ func renderOne(t SecretTarget, secrets map[string]map[string]interface{}, exec E
 		return ""
 	})
 
+	// Rendered content that looks like PEM must actually parse as PEM before
+	// it replaces a working target. A template referencing a secret path
+	// that doesn't exist yet renders an empty string in its place, which
+	// would otherwise silently destroy a live cert/key with no recovery
+	// path -- and this now fires on every reconnect (see connectWebSocket),
+	// not only when an operator explicitly asks. Anything that doesn't look
+	// like PEM is unvalidated, same as before: this scope is Proxy/TLS
+	// material, not config validation in general.
+	if strings.Contains(out, "-----BEGIN") {
+		// A missing secret value renders its placeholder as "", which an
+		// empty BEGIN/END block still passes pem.Decode with -- reject that
+		// too, not just a block that fails to decode at all.
+		if block, _ := pem.Decode([]byte(out)); block == nil || len(block.Bytes) == 0 {
+			return fmt.Errorf("rendered content for %s does not parse as PEM, keeping existing target", t.Target)
+		}
+	}
+
+	backupTarget(t.Target)
+
 	// Atomic write: temp file in the target's directory, then rename. 0600 — the
 	// rendered file holds secrets.
 	tmp, err := os.CreateTemp(filepath.Dir(t.Target), ".theta-secret-*")
@@ -108,6 +130,23 @@ func renderOne(t SecretTarget, secrets map[string]map[string]interface{}, exec E
 		}
 	}
 	return nil
+}
+
+// backupTarget copies the current content of target to target+".bak" before
+// it gets replaced, so a render an operator wouldn't have wanted (or one this
+// file's PEM check doesn't cover) still leaves something to restore by hand.
+// A target that doesn't exist yet (first render) is not an error.
+func backupTarget(target string) {
+	data, err := os.ReadFile(target)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("Secrets: backup of %s failed: %v", target, err)
+		}
+		return
+	}
+	if err := os.WriteFile(target+".bak", data, 0600); err != nil {
+		log.Printf("Secrets: backup of %s failed: %v", target, err)
+	}
 }
 
 // fetchSecrets asks the SSO for the given node-scoped secret paths.

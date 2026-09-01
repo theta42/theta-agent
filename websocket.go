@@ -199,6 +199,20 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// accepts the latter. See ensureMeshIdentity.
 		go ensureMeshIdentity(cm)
 
+		// Connect-time secrets pull (DESIGN.md §5): repairs local secret
+		// targets that drifted while this agent was offline, instead of
+		// relying solely on an operator's signed render_secrets command to
+		// catch it up. Same capability gate as that command, and
+		// backgrounded for the same reason ensureMeshIdentity is --
+		// idempotent, and must never block the WS session establishing.
+		if cfg.Capabilities.Secrets {
+			go func() {
+				if err := renderSecrets(cfg, exec); err != nil {
+					log.Printf("Secrets: connect-time render failed: %v", err)
+				}
+			}()
+		}
+
 		stopCh := make(chan struct{})
 
 		// All outbound writes go through the safe writer: gorilla allows only one
