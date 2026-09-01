@@ -1,3 +1,11 @@
+## [v2.21.8] - 2026-09-01
+
+### Added
+- **Agent-Pulled Configuration: Connect-Time Secrets Pull**: The agent now renders its configured secret templates (`secrets.go`) on every successful WebSocket connect, not only when an operator sends a signed `render_secrets` command — so a target that drifted while the agent was offline (or was never rendered because the command arrived before enrollment finished) self-heals on reconnect instead of waiting for someone to notice and push again. Gated by the same `secrets` capability as the existing command; backgrounded so a slow secrets fetch can never delay the WS session establishing.
+
+### Fixed
+- **Secret Render Could Silently Destroy a Working Cert With No Recovery Path**: `renderOne` had no content validation and kept no backup, so a template referencing a secret path that doesn't exist yet — previously harmless since rendering only ever ran on an explicit operator command — would render an empty string over a live PEM file with nothing to restore. Now: rendered content that looks like PEM (`-----BEGIN`) must actually decode as non-empty PEM or the render is rejected (old file kept, reload skipped), and any successful render backs up what it's replacing to `<target>.bak` first. Non-PEM targets are unvalidated, exactly as before — this covers Proxy/TLS material, not config validation in general.
+
 ## [v2.21.7] - 2026-09-01
 
 ### Fixed
