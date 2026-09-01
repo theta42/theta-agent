@@ -132,10 +132,21 @@ The agent renders OpenBao secrets to local files, reusing the existing
   fetches from OpenBao (node-scoped to `/secret/data/nodes/${NODE_ID}/*`) →
   the agent renders the file **atomically** (write temp + rename) with mode
   `0600` → runs the configured post-render action (`systemctl reload <svc>`).
-- **Rotation:** on a rotation/invalidation event pushed down the channel, the
-  agent re-fetches, re-renders, and reloads.
-- **Note:** OpenBao KV v2 secrets have no leases; "renewal" is a re-read on
-  invalidation, not a lease renewal. (Dynamic secrets, if used, are a separate
+- **Triggers:** an operator's signed `render_secrets` command, and — since
+  v2.21.8 — every successful WSS (re)connect, gated by the same `secrets`
+  capability. The connect-time pull is a catch-up for an agent that was
+  offline when a push went out; it is not an independent poll loop while a
+  connection stays up. There is no rotation/invalidation event pushed down
+  the channel independent of these two triggers.
+- **Safety (v2.21.8):** before a render replaces a target, the current file
+  (if any) is copied to `<target>.bak`. Rendered content that looks like PEM
+  (`-----BEGIN`) must decode as non-empty PEM or the render is rejected —
+  old file kept, reload skipped — so a template referencing a not-yet-existing
+  secret path can't silently blank out a live cert. Non-PEM targets are
+  unvalidated. There is no automatic rollback beyond the `.bak` file; restoring
+  it is a manual operator action.
+- **Note:** OpenBao KV v2 secrets have no leases; "renewal" is a re-read on a
+  trigger above, not a lease renewal. (Dynamic secrets, if used, are a separate
   path.)
 
 ---

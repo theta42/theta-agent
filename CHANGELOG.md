@@ -1,3 +1,8 @@
+## [v2.21.9] - 2026-09-01
+
+### Changed
+- **`DESIGN.md` §5 Corrected for v2.21.8**: Still described only the WS-command trigger and a "rotation/invalidation event pushed down the channel" that was never actually implemented separately from that command. Updated to list both real triggers (the signed command, and the v2.21.8 connect-time pull) and the backup/PEM-validation safety behavior added alongside it. No code change.
+
 ## [v2.21.8] - 2026-09-01
 
 ### Added
