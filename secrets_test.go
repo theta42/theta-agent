@@ -26,7 +26,9 @@ func TestRenderSecrets(t *testing.T) {
 			w.WriteHeader(404)
 			return
 		}
-		var req struct{ Paths []string `json:"paths"` }
+		var req struct {
+			Paths []string `json:"paths"`
+		}
 		json.NewDecoder(r.Body).Decode(&req)
 		gotPaths = req.Paths
 		w.Header().Set("Content-Type", "application/json")

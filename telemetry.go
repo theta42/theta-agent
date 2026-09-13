@@ -140,20 +140,32 @@ type TelemetryData struct {
 // `systemctl show` CPUUsageNS samples (a raw counter has no meaning without a
 // window). It is -1 until a second sample is available.
 type ServiceMetric struct {
-	Name            string  `json:"name"`
-	Active          bool    `json:"active"`
-	SubState        string  `json:"substate,omitempty"`
-	LoadState       string  `json:"load_state,omitempty"`
-	SubType         string  `json:"subtype,omitempty"`
-	CPUUsagePercent float64 `json:"cpu_usage_percent,omitempty"`
-	CPUUsageNS      int64   `json:"cpu_ns,omitempty"`
-	MemoryCurrent   uint64  `json:"memory_bytes,omitempty"`
-	NRestarts       uint64  `json:"n_restarts,omitempty"`
-	UptimeSeconds   int64   `json:"uptime_seconds,omitempty"`
-	// Schedule semantics used by systemd-timer and cron subtypes.
+	Name      string `json:"name"`
+	Active    bool   `json:"active"`
+	SubState  string `json:"substate,omitempty"`
+	LoadState string `json:"load_state,omitempty"`
+	SubType   string `json:"subtype,omitempty"`
+	// NOT omitempty, any of the numbers below: zero is a real reading for every
+	// one of them, and omitempty makes it indistinguishable from "this agent
+	// did not report it" -- which is what the directory renders as a blank
+	// rather than a value.
+	//
+	// cpu_usage_percent is the clearest case: the protocol defines -1 as the
+	// "no sample yet" sentinel precisely so that 0 can mean zero. omitempty
+	// then dropped the 0 and kept the -1, which is the contract backwards. An
+	// idle service -- the common case -- reported no CPU figure at all, and a
+	// healthy service that has never restarted reported no restart count.
+	CPUUsagePercent float64 `json:"cpu_usage_percent"`
+	CPUUsageNS      int64   `json:"cpu_ns"`
+	MemoryCurrent   uint64  `json:"memory_bytes"`
+	NRestarts       uint64  `json:"n_restarts"`
+	UptimeSeconds   int64   `json:"uptime_seconds"`
+	// Schedule semantics used by systemd-timer and cron subtypes. The strings
+	// keep omitempty: an empty one means "not applicable to this subtype",
+	// which is genuinely different from a number that happens to be zero.
 	NextRun   string `json:"next_run,omitempty"` // RFC3339, when next scheduled
 	LastRun   string `json:"last_run,omitempty"` // RFC3339, when last ran
-	Triggered uint64 `json:"triggered_count,omitempty"`
+	Triggered uint64 `json:"triggered_count"`
 	// VM semantics used by lxc/kvm/libvirt subtypes.
 	Status string `json:"status,omitempty"`
 }
@@ -333,7 +345,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.22.0"
+const AgentVersion = "v2.22.1"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {

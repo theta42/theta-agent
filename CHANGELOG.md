@@ -1,3 +1,11 @@
+## [v2.22.1] - 2026-09-13
+
+### Fixed
+- **A Zero Reading Was Indistinguishable From No Reading**: every numeric field on a `ServiceMetric` carried `omitempty`, so a legitimate zero was dropped from the telemetry frame entirely and the directory rendered it as a blank rather than a value. `cpu_usage_percent` is the sharpest case: the protocol defines `-1` as the "no sample yet" sentinel *precisely* so that `0` can mean zero — and `omitempty` kept the `-1` while dropping the `0`, which is the contract exactly backwards. An idle service (the common case) reported no CPU figure at all, and a service that had never restarted reported no restart count. `cpu_usage_percent`, `cpu_ns`, `memory_bytes`, `n_restarts`, `uptime_seconds` and `triggered_count` are now always sent. The string fields keep `omitempty`: an absent `next_run`/`status`/`substate` genuinely means "not applicable to this subtype", which is a different thing from a number that happens to be zero.
+
+### Changed
+- **`gofmt`**: the five files that were not gofmt-formatted now are. No behaviour change; `gofmt -l .` is clean for the first time.
+
 ## [v2.22.0] - 2026-09-12
 
 ### Fixed

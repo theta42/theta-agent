@@ -97,7 +97,6 @@ type TrayCommand struct {
 	SiteID  *int   `json:"site_id,omitempty"`
 }
 
-
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -145,16 +144,16 @@ func onReady() {
 	systray.SetTooltip("Theta Agent — connecting…")
 
 	// ── Menu ──
-	mStatus    = systray.AddMenuItem("Connecting to directory…", "Current connection status")
+	mStatus = systray.AddMenuItem("Connecting to directory…", "Current connection status")
 	mStatus.Disable()
 	systray.AddSeparator()
-	mAutoVPN   = systray.AddMenuItemCheckbox("Auto-connect VPN when away", "Automatically connect to home via WireGuard when not on the home LAN", false)
+	mAutoVPN = systray.AddMenuItemCheckbox("Auto-connect VPN when away", "Automatically connect to home via WireGuard when not on the home LAN", false)
 	mVPNToggle = systray.AddMenuItem("Connect VPN", "Manually connect or disconnect the WireGuard tunnel")
 	initExitMenu()
 	systray.AddSeparator()
 	mOpenConfig = systray.AddMenuItem("Open Config", "Open agent.yml in the default editor")
-	mReinit     = systray.AddMenuItem("Clear enrollment…", "Blank auth_token/public_key so the agent re-enrolls on reconnect")
-	mQuit       = systray.AddMenuItem("Quit Tray", "Exit the tray icon (daemon keeps running)")
+	mReinit = systray.AddMenuItem("Clear enrollment…", "Blank auth_token/public_key so the agent re-enrolls on reconnect")
+	mQuit = systray.AddMenuItem("Quit Tray", "Exit the tray icon (daemon keeps running)")
 
 	// ── IPC loop — connect with retry ──
 	go connectWithRetry()
@@ -445,12 +444,12 @@ func rgbaToDIB(img image.Image) []byte {
 	w, h := b.Dx(), b.Dy()
 
 	hdr := make([]byte, 40)
-	copy(hdr, putU32le(40))              // biSize
-	copy(hdr[4:], putU32le(w))           // biWidth
-	copy(hdr[8:], putU32le(h*2))         // biHeight (XOR + AND)
-	copy(hdr[12:], putU16le(1))          // biPlanes
-	copy(hdr[14:], putU16le(32))         // biBitCount
-	andRow := ((w + 31) / 32) * 4        // AND mask row, padded to 32 bits
+	copy(hdr, putU32le(40))                  // biSize
+	copy(hdr[4:], putU32le(w))               // biWidth
+	copy(hdr[8:], putU32le(h*2))             // biHeight (XOR + AND)
+	copy(hdr[12:], putU16le(1))              // biPlanes
+	copy(hdr[14:], putU16le(32))             // biBitCount
+	andRow := ((w + 31) / 32) * 4            // AND mask row, padded to 32 bits
 	copy(hdr[20:], putU32le(w*h*4+andRow*h)) // biSizeImage
 
 	xor := make([]byte, w*h*4)

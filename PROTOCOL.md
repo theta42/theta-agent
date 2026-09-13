@@ -205,7 +205,12 @@ resource of the host and its health.
   Each entry carries live resource usage and state:
   - `substate`, `load_state` (string): runtime sub/load state.
   - `cpu_usage_percent` (float): CPU rate over the last ~30s window (`-1` until a
-    second sample exists).
+    second sample exists). **Always present**, as are `memory_bytes`,
+    `n_restarts`, `uptime_seconds`, `cpu_ns` and `triggered_count`: zero is a
+    real reading for each (an idle service, one that has never restarted), and
+    omitting it made that indistinguishable from "not reported", which the
+    directory renders as a blank rather than a value. `-1` is the sentinel for
+    "no sample yet" precisely so that `0` can mean zero.
   - `memory_bytes` (uint64): current RSS (systemd `MemoryCurrent`, docker/podman
     stats, or process `VmRSS`).
   - `n_restarts` (uint64): cumulative restart count (0 for `process`, which has

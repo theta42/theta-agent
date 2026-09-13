@@ -81,4 +81,3 @@ func TestToWindowsIcon(t *testing.T) {
 		}
 	}
 }
-
