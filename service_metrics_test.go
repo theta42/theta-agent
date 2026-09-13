@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -232,5 +233,51 @@ func TestParsePercent(t *testing.T) {
 	}
 	if got := parsePercent("junk"); got != -1 {
 		t.Fatalf("parsePercent(junk) = %f, want -1", got)
+	}
+}
+
+// TestServiceMetricZeroValuesReachTheWire is the regression for an idle service
+// reporting no CPU figure at all.
+//
+// Every numeric field carried `omitempty`, so a zero was dropped from the JSON
+// and the directory could not tell "0%" from "this agent said nothing" -- it
+// renders the second as a blank. cpu_usage_percent is the sharpest case: the
+// protocol defines -1 as the "no sample yet" sentinel so that 0 can mean zero,
+// and omitempty kept the -1 while dropping the 0, which is the contract exactly
+// backwards.
+func TestServiceMetricZeroValuesReachTheWire(t *testing.T) {
+	// A healthy, idle, never-restarted service: every number is legitimately 0.
+	idle := ServiceMetric{Name: "quiet.service", Active: true, SubType: "systemd"}
+
+	raw, err := json.Marshal(idle)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var onWire map[string]interface{}
+	if err := json.Unmarshal(raw, &onWire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	for _, key := range []string{
+		"cpu_usage_percent", "cpu_ns", "memory_bytes",
+		"n_restarts", "uptime_seconds", "triggered_count",
+	} {
+		v, ok := onWire[key]
+		if !ok {
+			t.Errorf("%s is missing from the frame; a zero reading must be sent, not omitted (raw: %s)", key, raw)
+			continue
+		}
+		if f, isNum := v.(float64); !isNum || f != 0 {
+			t.Errorf("%s = %v, want 0", key, v)
+		}
+	}
+
+	// The strings keep omitempty: absent genuinely means "not applicable to
+	// this subtype" rather than a value that happens to be empty.
+	for _, key := range []string{"next_run", "last_run", "status", "substate"} {
+		if _, present := onWire[key]; present {
+			t.Errorf("%s should be omitted when empty, got %v", key, onWire[key])
+		}
 	}
 }

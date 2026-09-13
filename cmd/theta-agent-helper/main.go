@@ -29,10 +29,10 @@ import (
 )
 
 const (
-	wmSyscommand      = 0x0112
-	scMonitorpower    = 0xF170
-	sleepHwnd         = ^uintptr(0) // HWND_BROADCAST
-	monitorPowerOff   = 2
+	wmSyscommand    = 0x0112
+	scMonitorpower  = 0xF170
+	sleepHwnd       = ^uintptr(0) // HWND_BROADCAST
+	monitorPowerOff = 2
 
 	wtsCurrentServerHandle = 0
 	wtsUserName            = 5
@@ -43,13 +43,13 @@ var (
 	wtsapi32 = syscall.NewLazyDLL("wtsapi32.dll")
 	powrprof = syscall.NewLazyDLL("powrprof.dll")
 
-	procLockWorkStation     = user32.NewProc("LockWorkStation")
-	procSendMessageW        = user32.NewProc("SendMessageW")
-	procWTSLogoffSession    = wtsapi32.NewProc("WTSLogoffSession")
-	procWTSEnumerateSessionsW = wtsapi32.NewProc("WTSEnumerateSessionsW")
+	procLockWorkStation             = user32.NewProc("LockWorkStation")
+	procSendMessageW                = user32.NewProc("SendMessageW")
+	procWTSLogoffSession            = wtsapi32.NewProc("WTSLogoffSession")
+	procWTSEnumerateSessionsW       = wtsapi32.NewProc("WTSEnumerateSessionsW")
 	procWTSQuerySessionInformationW = wtsapi32.NewProc("WTSQuerySessionInformationW")
-	procWTSFreeMemory       = wtsapi32.NewProc("WTSFreeMemory")
-	procSetSuspendState     = powrprof.NewProc("SetSuspendState")
+	procWTSFreeMemory               = wtsapi32.NewProc("WTSFreeMemory")
+	procSetSuspendState             = powrprof.NewProc("SetSuspendState")
 )
 
 type wtsSessionInfo struct {
