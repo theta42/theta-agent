@@ -109,7 +109,7 @@ func verifySignature(cfg *Config, msg WSMessage) bool {
 	}
 
 	return ed25519.Verify(pubKeyBytes, canonicalPayload, sig)
- }
+}
 func connectWebSocket(cm *ConfigManager, exec Executor) {
 	for {
 		cfg := cm.Get()
@@ -128,6 +128,7 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		// server name a self-enrolling host something meaningful instead of a
 		// generated placeholder.
 		q := url.Values{}
+		prevToken := ""
 		if hn, err := os.Hostname(); err == nil && hn != "" {
 			q.Set("hostname", hn)
 		}
@@ -140,6 +141,15 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 			if site := resolveSiteHint(cfg); site != "" {
 				q.Set("site", site)
 			}
+			// Contract G-2: a join key alone cannot re-enroll a hostname the
+			// directory already knows -- that would let anyone holding the
+			// fleet key collide on a name and take the real host's identity.
+			// Presenting the token we held before the enrollment was cleared
+			// proves we ARE that host, and the server rotates us onto a fresh
+			// one. Without this, `reset-enrollment` and the tray's re-enroll
+			// were one-way doors: the agent was rejected 4001 on every dial
+			// from then on.
+			prevToken = strings.TrimSpace(cfg.PrevAuthToken)
 		}
 		u.RawQuery = q.Encode()
 
@@ -156,6 +166,16 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 		if cred := cfg.Credential(); cred != "" {
 			headers = http.Header{}
 			headers.Set("Authorization", cred)
+		}
+		// Header, not query string, for the same reason as the credential
+		// above: a token in a URL lands in every proxy and server access log
+		// along the way. The directory reads the header first and falls back to
+		// ?prev_token= only for compatibility.
+		if prevToken != "" {
+			if headers == nil {
+				headers = http.Header{}
+			}
+			headers.Set("X-Theta-Prev-Token", prevToken)
 		}
 
 		if cfg.Credential() == "" {
@@ -306,40 +326,40 @@ func connectWebSocket(cm *ConfigManager, exec Executor) {
 				break
 			}
 
-		var msg WSMessage
-		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("Error unmarshaling message: %v", err)
+			var msg WSMessage
+			if err := json.Unmarshal(message, &msg); err != nil {
+				log.Printf("Error unmarshaling message: %v", err)
+				continue
+			}
+
+			handleCommand(cm, msg, sw, exec, tunnel)
+		}
+
+		// Cleanup on disconnect
+		wsConnected.Store(false)
+		currentWriterMu.Lock()
+		currentWriter = nil
+		currentWriterMu.Unlock()
+		close(stopCh)
+		c.Close()
+
+		if authRejected {
+			log.Printf("Reconnecting in %s.", authRetryInterval)
+			time.Sleep(authRetryInterval)
 			continue
 		}
 
-		handleCommand(cm, msg, sw, exec, tunnel)
+		log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
+		// A local-discovery apply/revert (hosts override + route change) wants
+		// the new resolution path picked up right away rather than after the
+		// full backoff. discoveryChangedCh is drained here only; a change
+		// while still connected takes effect on the next natural reconnect.
+		select {
+		case <-discoveryChangedCh:
+			log.Println("Local-discovery routing changed; reconnecting immediately.")
+		case <-time.After(5 * time.Second):
+		}
 	}
-
-	// Cleanup on disconnect
-	wsConnected.Store(false)
-	currentWriterMu.Lock()
-	currentWriter = nil
-	currentWriterMu.Unlock()
-	close(stopCh)
-	c.Close()
-
-	if authRejected {
-		log.Printf("Reconnecting in %s.", authRetryInterval)
-		time.Sleep(authRetryInterval)
-		continue
-	}
-
-	log.Println("WebSocket disconnected. Reconnecting in 5 seconds...")
-	// A local-discovery apply/revert (hosts override + route change) wants
-	// the new resolution path picked up right away rather than after the
-	// full backoff. discoveryChangedCh is drained here only; a change
-	// while still connected takes effect on the next natural reconnect.
-	select {
-	case <-discoveryChangedCh:
-		log.Println("Local-discovery routing changed; reconnecting immediately.")
-	case <-time.After(5 * time.Second):
-	}
-}
 
 }
 
@@ -364,9 +384,24 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		log.Printf("Received command: %s", msg.Type)
 	}
 
+	// Every answer goes out in the {type, payload} envelope PROTOCOL.md 3.4
+	// specifies. This used to write a bare {"status":…,"message":…} with no
+	// type, and the directory drops any frame without a string `type` without
+	// logging it -- so every command response this agent ever sent was
+	// discarded in silence: `lastResponse` stayed null on the fleet view and no
+	// command's output ever reached the UI.
+	sendResponsePayload := func(payload map[string]interface{}) {
+		resp, err := json.Marshal(WSMessage{Type: "response", Payload: payload})
+		if err != nil {
+			log.Printf("Could not marshal response payload: %v", err)
+			return
+		}
+		if err := c.WriteMessage(websocket.TextMessage, resp); err != nil {
+			log.Printf("Could not send response: %v", err)
+		}
+	}
 	sendResponse := func(status string, message string) {
-		resp, _ := json.Marshal(map[string]string{"status": status, "message": message})
-		c.WriteMessage(websocket.TextMessage, resp)
+		sendResponsePayload(map[string]interface{}{"status": status, "message": message})
 	}
 	switch msg.Type {
 	case "ldap_tunnel":
@@ -410,13 +445,14 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			sendResponse("error", "failed to fetch logs")
 			return
 		}
-		resp := map[string]interface{}{
+		sendResponsePayload(map[string]interface{}{
 			"status":  "ok",
 			"service": serviceName,
 			"logs":    string(out),
-		}
-		respPayload, _ := json.Marshal(resp)
-		c.WriteMessage(websocket.TextMessage, respPayload)
+			// `output` too: the directory records the generic field, so the
+			// logs are visible without it having to know this command's shape.
+			"output": string(out),
+		})
 		return
 	case "update_binary":
 		if !verifySignature(cfg, msg) {
@@ -547,14 +583,17 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		if err != nil {
 			errMsg = err.Error()
 		}
-		respMap := map[string]interface{}{
-			"status":    "ok",
+		status := "ok"
+		if errMsg != "" {
+			status = "error"
+		}
+		sendResponsePayload(map[string]interface{}{
+			"status":    status,
+			"message":   fmt.Sprintf("desktop action %s", subAction),
 			"subAction": subAction,
 			"output":    string(out),
 			"error":     errMsg,
-		}
-		respPayload, _ := json.Marshal(respMap)
-		c.WriteMessage(websocket.TextMessage, respPayload)
+		})
 		return
 	case "systemd_action":
 		serviceName, _ := msg.Payload["service"].(string)
@@ -581,16 +620,19 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		if err != nil {
 			errMsg = err.Error()
 		}
-		respMap := map[string]interface{}{
-			"status":  "ok",
+		status := "ok"
+		if errMsg != "" {
+			status = "error"
+		}
+		sendResponsePayload(map[string]interface{}{
+			"status":  status,
+			"message": fmt.Sprintf("%s %s (%s)", action, serviceName, subtypeOrSystemd(subtype)),
 			"service": serviceName,
 			"subtype": subtypeOrSystemd(subtype),
 			"action":  action,
 			"output":  string(out),
 			"error":   errMsg,
-		}
-		respPayload, _ := json.Marshal(respMap)
-		c.WriteMessage(websocket.TextMessage, respPayload)
+		})
 		return
 	case "service_restart":
 		if !verifySignature(cfg, msg) {
@@ -832,12 +874,11 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 			return
 		}
 
-		resp := map[string]string{
-			"status": "ok",
-			"output": string(out),
-		}
-		respPayload, _ := json.Marshal(resp)
-		c.WriteMessage(websocket.TextMessage, respPayload)
+		sendResponsePayload(map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("script executed (%d bytes)", len(script)),
+			"output":  string(out),
+		})
 		return
 	case "zpool_scrub":
 		if !verifySignature(cfg, msg) {
@@ -860,24 +901,19 @@ func handleCommand(cm *ConfigManager, msg WSMessage, c MessageWriter, exec Execu
 		}
 		log.Printf("Starting zpool scrub on %s...", pool)
 		out, err := defaultPlatformOps.ZpoolScrub(pool)
-		errMsg := ""
 		if err != nil {
-			errMsg = err.Error()
 			log.Printf("zpool scrub failed: %v", err)
 			sendResponse("error", fmt.Sprintf("zpool scrub failed: %v", err))
 			return
 		}
-		resp := map[string]string{
-			"status": "ok",
-			"output": string(out),
-		}
-		if errMsg != "" {
-			resp["error"] = errMsg
-		}
-		respPayload, _ := json.Marshal(resp)
-		c.WriteMessage(websocket.TextMessage, respPayload)
+		sendResponsePayload(map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("scrub started on %s", pool),
+			"pool":    pool,
+			"output":  string(out),
+		})
 		return
- 	// heartbeat_ack is the server's acknowledgement of the agent's own periodic
+		// heartbeat_ack is the server's acknowledgement of the agent's own periodic
 	// heartbeat (the agent sends `heartbeat`, the server answers `heartbeat_ack`).
 	// There is nothing to do with it -- it is not a command to run, and answering
 	// an ack with an error response would inject spurious errors into the

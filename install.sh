@@ -324,8 +324,56 @@ stop_stray_agents() {
 stop_stray_agents
 
 # 3. Install binary
+#
+# The DIRECTORY first, GitHub as the fallback.
+#
+# setup.sh stages every release artifact for the suite's pinned agent version
+# into the directory's /resources/theta-agent/ and serves it there, which is
+# where `theta-agent update` already fetches from. This script went straight to
+# GitHub's `releases/latest` regardless, which got two things wrong at once: an
+# air-gapped or egress-filtered host could not install at all even though the
+# bytes were sitting on the directory it was being pointed at, and a host that
+# COULD reach GitHub ended up on a different build than the directory serves --
+# so its first self-update moved it backwards to the pinned version.
+#
+# Only tried when --url was given (the normal case); the GitHub URL stays the
+# answer for an install with no directory to ask.
+install_binary() {
+  if [ -n "$URL" ]; then
+    _base="$(printf '%s' "$URL" | sed -e 's|^ws://|http://|' -e 's|^wss://|https://|' -e 's|/*$||')"
+    _staged="${_base}/resources/theta-agent/${BINARY_NAME}"
+    log "Fetching $BINARY_NAME from the directory ($_staged)..."
+    if curl -fsSL "$_staged" -o "$BIN_PATH.tmp" && [ -s "$BIN_PATH.tmp" ]; then
+      # Verify against the manifest the directory serves beside it. A binary
+      # that runs as root on every host is not something to install on the
+      # strength of "the download did not 404".
+      _sums="${_base}/resources/theta-agent/SHA256SUMS"
+      _expected="$(curl -fsSL "$_sums" 2>/dev/null | awk -v f="$BINARY_NAME" '$2 == f || $2 == "*"f {print $1}' | head -n1)"
+      if [ -n "$_expected" ] && command -v sha256sum >/dev/null 2>&1; then
+        _actual="$(sha256sum "$BIN_PATH.tmp" | awk '{print $1}')"
+        if [ "$_expected" = "$_actual" ]; then
+          log "Verified $BINARY_NAME against the directory's SHA256SUMS."
+          return 0
+        fi
+        echo -e "${RED}[!]${NC} Checksum mismatch on the directory's $BINARY_NAME (expected $_expected, got $_actual) -- falling back to GitHub."
+      elif [ -z "$_expected" ]; then
+        # Staged without a manifest entry: usable, but say so rather than
+        # implying it was checked.
+        log "No SHA256SUMS entry for $BINARY_NAME on the directory; installing it unverified."
+        return 0
+      else
+        log "sha256sum is not available to verify with; installing the directory's $BINARY_NAME unverified."
+        return 0
+      fi
+    fi
+    rm -f "$BIN_PATH.tmp"
+    log "The directory is not serving $BINARY_NAME -- falling back to GitHub."
+  fi
+  curl -fsSL "$BINARY_URL" -o "$BIN_PATH.tmp" || error "Failed to download binary from $BINARY_URL"
+}
+
 log "Detected OS: $OS_NAME ($ARCH_NAME) -> Downloading binary $BINARY_NAME..."
-curl -fsSL "$BINARY_URL" -o "$BIN_PATH.tmp" || error "Failed to download binary from $BINARY_URL"
+install_binary
 chmod +x "$BIN_PATH.tmp"
 mv -f "$BIN_PATH.tmp" "$BIN_PATH"
 

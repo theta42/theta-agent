@@ -67,7 +67,10 @@ func TestApplyIAM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read access.conf: %v", err)
 	}
-	wantAccess := "+:sysadmins:ALL\n+:node-operators:ALL\n-:ALL:ALL\n"
+	// `+:root:ALL` leads, always: the file ends in `-:ALL:ALL`, so without it a
+	// pushed group list that does not cover this machine's administrators locks
+	// out root at the console too, and there is no way back in.
+	wantAccess := "+:root:ALL\n+:sysadmins:ALL\n+:node-operators:ALL\n-:ALL:ALL\n"
 	if string(access) != wantAccess {
 		t.Fatalf("access.conf mismatch:\n got: %q\nwant: %q", access, wantAccess)
 	}
@@ -95,8 +98,8 @@ func TestApplyIAM(t *testing.T) {
 // TestParseIAMPayload verifies the payload parses from a WSMessage payload map.
 func TestParseIAMPayload(t *testing.T) {
 	payload := map[string]interface{}{
-		"node_id":   "node-42",
-		"revision":  float64(82),
+		"node_id":  "node-42",
+		"revision": float64(82),
 		"access_control": map[string]interface{}{
 			"allowed_login_groups": []interface{}{"sysadmins"},
 			"sudo_rules": []interface{}{

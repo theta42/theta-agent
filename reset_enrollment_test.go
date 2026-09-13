@@ -110,3 +110,66 @@ func TestResetEnrollmentKeysToleratesAMissingMeshKey(t *testing.T) {
 		t.Fatalf("resetEnrollment --keys with no key present: %v", err)
 	}
 }
+
+// TestResetEnrollmentKeepsTheTokenAsTheRejoinProof is the regression for
+// re-enrollment being a one-way door.
+//
+// `reset-enrollment` blanked auth_token outright. The agent then dialled with
+// its join key, the directory found the hostname already registered, and
+// contract G-2 requires the current token as proof of continuity before it will
+// rotate -- so the dial was rejected 4001 ("prev_token required") on every
+// attempt, forever, and only deleting the agent row in the directory by hand
+// could recover the host. The superseded token is the proof, so it is kept.
+func TestResetEnrollmentKeepsTheTokenAsTheRejoinProof(t *testing.T) {
+	path := writeAgentYML(t, `server_url: "wss://sso.example.com"
+auth_token: "tok_live"
+join_key: "join_abc"
+public_key: "directory-signing-key"
+`)
+
+	if _, err := resetEnrollment(path, "", false); err != nil {
+		t.Fatalf("resetEnrollment: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.AuthToken != "" {
+		t.Errorf("auth_token = %q, want empty", cfg.AuthToken)
+	}
+	if cfg.PrevAuthToken != "tok_live" {
+		t.Errorf("prev_auth_token = %q, want the superseded token", cfg.PrevAuthToken)
+	}
+	if cfg.Credential() != "join_abc" {
+		t.Errorf("Credential() = %q, want the join key -- prev_auth_token is proof, not a credential", cfg.Credential())
+	}
+}
+
+// TestPersistEnrollmentSpendsTheRejoinProof: once the directory has accepted
+// the proof and issued a new token, keeping the superseded one on disk buys
+// nothing and is one more credential to leak.
+func TestPersistEnrollmentSpendsTheRejoinProof(t *testing.T) {
+	path := writeAgentYML(t, `server_url: "wss://sso.example.com"
+auth_token: ""
+join_key: "join_abc"
+prev_auth_token: "tok_old"
+`)
+	cm, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistEnrollment("tok_new", "PK"); err != nil {
+		t.Fatalf("PersistEnrollment: %v", err)
+	}
+	cfg := cm.Get()
+	if cfg.AuthToken != "tok_new" {
+		t.Errorf("auth_token = %q, want tok_new", cfg.AuthToken)
+	}
+	if cfg.PrevAuthToken != "" {
+		t.Errorf("prev_auth_token = %q, want empty once spent", cfg.PrevAuthToken)
+	}
+	if cfg.JoinKey != "" {
+		t.Errorf("join_key = %q, want blanked once we hold our own token", cfg.JoinKey)
+	}
+}

@@ -72,9 +72,9 @@ type HostDetails struct {
 }
 
 type DiscoveryData struct {
-	Hostname     string                 `json:"hostname"`
-	IPs          []string               `json:"ip_addresses"`
-	PublicIP     string                 `json:"public_ip"`
+	Hostname string   `json:"hostname"`
+	IPs      []string `json:"ip_addresses"`
+	PublicIP string   `json:"public_ip"`
 	// MACAddress is the primary NIC's MAC, so the directory can build a stable
 	// identity for this host that survives hostname changes and IP churn.
 	MACAddress   string                 `json:"mac_address"`
@@ -93,20 +93,42 @@ type DiscoveryData struct {
 	Capabilities map[string]interface{} `json:"capabilities"`
 }
 
+// WireGuardTelemetry is what this host can honestly say about its tunnel
+// without shelling out to `wg show` on every 30s tick: whether the interface is
+// up, and whether the userspace tools are even installed. Those two separate
+// "the mesh is fine" from the failure modes that look identical from the
+// directory -- no tools installed, and a config present but down.
+type WireGuardTelemetry struct {
+	Active bool `json:"active"`
+	Ready  bool `json:"ready"`
+}
+
 type TelemetryData struct {
-	CPUUsagePercent  float64         `json:"cpu_usage_percent"`
-	CPUDetails       CPUDetails      `json:"cpu_details"`
-	RAMUsagePercent  float64         `json:"ram_usage_percent"`
-	RAMDetails       RAMDetails      `json:"ram_details"`
-	DiskUsagePercent float64         `json:"disk_usage_percent"`
-	Disks            []DiskItem      `json:"disks"`
-	LoggedUsers      []LoggedUser    `json:"logged_users"`
-	HostDetails      HostDetails     `json:"host_details"`
-	Version          string          `json:"version"`
-	ZFSHealth        string          `json:"zfs_health,omitempty"`
-	GPUUsage         float64         `json:"gpu_usage_percent,omitempty"`
-	Services         []ServiceMetric `json:"services,omitempty"`
-	Timestamp        string          `json:"timestamp"`
+	CPUUsagePercent  float64      `json:"cpu_usage_percent"`
+	CPUDetails       CPUDetails   `json:"cpu_details"`
+	RAMUsagePercent  float64      `json:"ram_usage_percent"`
+	RAMDetails       RAMDetails   `json:"ram_details"`
+	DiskUsagePercent float64      `json:"disk_usage_percent"`
+	Disks            []DiskItem   `json:"disks"`
+	LoggedUsers      []LoggedUser `json:"logged_users"`
+	HostDetails      HostDetails  `json:"host_details"`
+	Version          string       `json:"version"`
+	// UptimeSeconds is how long the host has been up. The directory's driver
+	// has always read it; nothing ever sent it, so every host reported null.
+	UptimeSeconds uint64 `json:"uptime_seconds"`
+	// WireGuard is the live tunnel state, for the mesh view. Same story: the
+	// driver read `wireguard` off telemetry and the agent never sent it, so a
+	// wireguard resource rendered an empty peer list that meant nothing.
+	WireGuard *WireGuardTelemetry `json:"wireguard,omitempty"`
+	ZFSHealth string              `json:"zfs_health,omitempty"`
+	GPUUsage  float64             `json:"gpu_usage_percent,omitempty"`
+	// NOT omitempty: the directory prunes the service children a host no
+	// longer reports, and it can only do that safely when an empty list
+	// arrives as `"services": []` rather than as an absent key. Omitting it
+	// made "I have no services any more" indistinguishable from "I am an old
+	// agent that does not report services".
+	Services  []ServiceMetric `json:"services"`
+	Timestamp string          `json:"timestamp"`
 }
 
 // ServiceMetric is the per-service status and resource usage reported for each
@@ -311,7 +333,7 @@ func collectHostDetails() HostDetails {
 	return details
 }
 
-const AgentVersion = "v2.21.9"
+const AgentVersion = "v2.22.0"
 
 // CollectDiscoveryData gathers static host information.
 func CollectDiscoveryData(cfg *Config) DiscoveryData {
@@ -363,14 +385,20 @@ func CollectDiscoveryData(cfg *Config) DiscoveryData {
 		Version:     AgentVersion,
 		Location:    cfg.Location,
 		Capabilities: map[string]interface{}{
-			"telemetry":            cfg.Capabilities.Telemetry,
-			"configure_ldap":       cfg.Capabilities.ConfigureLDAP,
-			"ldap_tunnel":          cfg.Capabilities.LdapTunnel,
-			"secrets":              cfg.Capabilities.Secrets,
-			"iam":                  cfg.Capabilities.IAM,
-			"reboot":               cfg.Capabilities.Reboot,
-			"shutdown":             true,
-			"desktop_controls":     true,
+			"telemetry":      cfg.Capabilities.Telemetry,
+			"configure_ldap": cfg.Capabilities.ConfigureLDAP,
+			"ldap_tunnel":    cfg.Capabilities.LdapTunnel,
+			"secrets":        cfg.Capabilities.Secrets,
+			"iam":            cfg.Capabilities.IAM,
+			"reboot":         cfg.Capabilities.Reboot,
+			// Shutdown is gated by the SAME capability as reboot
+			// (websocket.go), so reporting it as unconditionally available
+			// offered the directory a button that could only ever be refused.
+			"shutdown":         cfg.Capabilities.Reboot,
+			"desktop_controls": true,
+			// The gate on zpool_scrub. Never reported, so the directory had no
+			// way to know whether a scrub would be accepted.
+			"storage":              cfg.Capabilities.Storage,
 			"service_control":      cfg.Capabilities.ServiceControl,
 			"service_registration": cfg.Capabilities.ServiceRegistration,
 			"arbitrary_bash":       cfg.Capabilities.ArbitraryBash,
@@ -419,6 +447,8 @@ func CollectTelemetryData(exec Executor, services []RegisteredService) Telemetry
 		LoggedUsers:      loggedUsers,
 		HostDetails:      hostDet,
 		Version:          AgentVersion,
+		UptimeSeconds:    collectUptimeSeconds(),
+		WireGuard:        collectWireGuardTelemetry(),
 		ZFSHealth:        collectZFSHealth(exec),
 		GPUUsage:         collectGPUUsage(exec),
 		Services:         collectServiceMetrics(exec, services),
@@ -426,14 +456,41 @@ func CollectTelemetryData(exec Executor, services []RegisteredService) Telemetry
 	}
 }
 
+// collectUptimeSeconds reports how long the host has been up. host.Uptime()
+// errors are reported as zero rather than propagated: a missing uptime must not
+// cost the directory the whole telemetry frame.
+func collectUptimeSeconds() uint64 {
+	up, err := host.Uptime()
+	if err != nil {
+		return 0
+	}
+	return up
+}
+
+// collectWireGuardTelemetry reports tunnel state from what the agent already
+// knows -- the interface check the home monitor runs anyway, and the tools probe
+// from wg_tools.go. No extra process per tick.
+func collectWireGuardTelemetry() *WireGuardTelemetry {
+	ready := WireGuardToolsReady()
+	active := false
+	if ready && defaultPlatformOps != nil {
+		active = defaultPlatformOps.WireGuardState()
+	}
+	return &WireGuardTelemetry{Active: active, Ready: ready}
+}
+
 // collectServiceMetrics probes each registered service and reports its status
 // plus resource usage. Dispatch is per subtype. A probe failure (service
 // removed, tool error) reports the service as inactive.
 func collectServiceMetrics(exec Executor, services []RegisteredService) []ServiceMetric {
-	if len(services) == 0 {
-		return nil
-	}
+	// Non-nil even when empty: a nil slice marshals to `null`, and the
+	// directory treats a null services key as "this agent said nothing" rather
+	// than "this agent has none", so it would never prune the last service off
+	// a host.
 	metrics := make([]ServiceMetric, 0, len(services))
+	if len(services) == 0 {
+		return metrics
+	}
 	for _, rs := range services {
 		if rs.Name == "" {
 			continue
