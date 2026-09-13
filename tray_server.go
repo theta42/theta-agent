@@ -151,11 +151,24 @@ func (ts *trayServer) handleCommand(conn net.Conn, cmd TrayCommand) {
 			TriggerTrayStatusPush()
 		}
 	case "reinit":
+		if currentCM == nil {
+			log.Printf("[tray-ipc] cannot clear enrollment: no config loaded")
+			return
+		}
+		// Same guard `theta-agent reset-enrollment` has. Clearing the token
+		// with no join key to fall back on leaves the host unable to
+		// authenticate at all -- the daemon then loops on "nothing to
+		// authenticate with" and only an operator editing agent.yml by hand can
+		// recover it. A re-enroll that bricks the host is not a re-enroll.
+		if cur := currentCM.Get(); cur.JoinKey == "" && cur.AuthToken != "" {
+			log.Printf("[tray-ipc] refusing to clear enrollment: %s has an auth_token but no join_key, "+
+				"so this host would have nothing left to authenticate with. Set a join key first "+
+				"(theta-agent config-set join_key=<key>).", currentCM.Path())
+			return
+		}
 		log.Printf("[tray-ipc] clearing enrollment (re-enroll requested)")
-		if currentCM != nil {
-			if err := currentCM.ClearEnrollment(); err != nil {
-				log.Printf("[tray-ipc] could not clear enrollment: %v", err)
-			}
+		if err := currentCM.ClearEnrollment(); err != nil {
+			log.Printf("[tray-ipc] could not clear enrollment: %v", err)
 		}
 	case "set_exit":
 		// The tray only ever steers its OWN device: the daemon calls the
@@ -206,7 +219,6 @@ func (ts *trayServer) handleCommand(conn net.Conn, cmd TrayCommand) {
 		log.Printf("[tray-ipc] unknown command: %q", cmd.Command)
 	}
 }
-
 
 // Push broadcasts an updated status to all connected tray clients.
 func (ts *trayServer) Push(status TrayStatus) {

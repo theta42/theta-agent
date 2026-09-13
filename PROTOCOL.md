@@ -1,6 +1,12 @@
-# Theta Agent Protocol Specification (v1.3.0)
+# Theta Agent Protocol Specification (v1.4.0)
 
 This document defines the communication protocol between the `theta-agent` (Client) and the `sso-manager` (Server).
+
+**v1.4.0** documents two things that were already load-bearing and written down
+nowhere — the `?prev_token=` re-enrollment proof (§1.1) and the `site_name` /
+`organization_name` config fields (§4.0) — and fixes the response envelope on
+the agent side (§3.4) so command answers are no longer discarded. The server
+accepts the old typeless form, so the two sides can be upgraded in either order.
 
 **v1.3.0** is additive over v1.2.0 and needs no coordinated upgrade: the two new
 `config` fields (§4.0) are optional, and the mesh REST endpoints (§6) and tray
@@ -38,6 +44,32 @@ add a host — no value has to be copied between two machines by hand.
 The public key is accepted on first connect (trust on first use) over the same
 channel that issued the token. Pre-register the host instead if you need the
 trust anchor pinned out of band.
+
+**Re-enrolling a host the directory already knows (`prev_token`).** A join key on
+its own cannot enroll a hostname that is already registered — otherwise anyone
+holding the fleet-wide key could collide on a name and rotate the real host's
+token out from under it. To re-enroll, the agent presents the token it held
+before its enrollment was cleared:
+
+| Where | Value |
+| :--- | :--- |
+| `X-Theta-Prev-Token` header (preferred) | the superseded `auth_token` |
+| `?prev_token=<…>` query parameter | the same, for agents that cannot set headers |
+
+The server rotates the existing enrollment onto a fresh token **only** on an
+exact match, and otherwise closes `4001` — the same answer as an unknown
+credential, so a caller probing hostnames learns nothing. This is contract G-2.
+
+The agent keeps that value in `prev_auth_token` in `agent.yml`:
+`reset-enrollment` and the tray's re-enroll move `auth_token` there rather than
+blanking it, and a successful enrollment clears it again. It is **not** a
+credential the agent will authenticate with — `Credential()` never returns it —
+only the proof of continuity for this one exchange.
+
+> Without it, `reset-enrollment` was a one-way door: the host dialled with its
+> join key, collided with its own hostname, and was rejected `4001` on every
+> attempt from then on. Only deleting the agent row in the directory by hand
+> could recover it.
 
 
 
@@ -122,6 +154,11 @@ Sent every 30 seconds.
   - `disk_usage_percent`: (float) Current root disk utilization.
   - `zfs_health`: (string) Primary ZFS pool status (e.g., "ONLINE").
   - `gpu_usage_percent`: (float) Average NVIDIA GPU utilization (-1.0 if unavailable).
+  - `uptime_seconds`: (uint64) Seconds since boot.
+  - `wireguard`: (object, optional) `{ "active": bool, "ready": bool }` — whether
+    the tunnel interface is up, and whether the userspace tools (`wg`,
+    `wg-quick`) are installed at all. `ready: false` is what separates "the mesh
+    is configured and down" from "this host can never bring it up".
   - `timestamp`: (string) RFC3339 timestamp.
 
 ### 3.3 Heartbeat (Periodic)
@@ -132,13 +169,27 @@ Sent every 60 seconds to maintain the connection and signal health.
   - `timestamp`: (string) RFC3339 timestamp.
 
 ### 3.4 Command Response
-Sent in response to any command received from the server.
 
-- **Type**: `response` (Implicitly handled as the answer to a command)
+Sent in response to any command received from the server. Like every other
+frame, it is a full `{type, payload}` envelope — **the `type` is not optional**.
+
+- **Type**: `response`
 - **Payload**:
   - `status`: (string) Either `"ok"` or `"error"`.
   - `message`: (string) Human-readable result or error description.
   - `output`: (string, optional) Stdout/stderr for execution commands.
+  - command-specific keys where the command has them: `service`, `subtype`,
+    `action` (`systemd_action`), `subAction` (`desktop_control`), `logs`
+    (`fetch_logs`), `pool` (`zpool_scrub`), `error`.
+
+Up to v2.21.9 the agent wrote a bare `{"status": …, "message": …}` with no
+envelope at all. The server drops any frame without a string `type` — silently,
+since an unparseable frame is not something to log per connection — so **every
+command response the agent sent was discarded**: the fleet view's "last
+response" was permanently null and no command's output ever reached the UI.
+
+Servers accept the typeless form as a `response` for compatibility with agents
+that predate the fix. New agents must send the envelope.
 
 ### 3.5 Telemetry Service Metrics
 
@@ -165,7 +216,17 @@ resource of the host and its health.
     since the agent started (incremented each tick the last-run advances).
   - `status` (string): VM state (`lxc`, `kvm`/`libvirt`).
 - A service removed from `agent.yml` stops appearing here; the directory drops
-  its child resource on the next reconciliation.
+  its child resource on the next reconciliation. A child the directory learned
+  about from another source as well (a docker-socket scan, a seeded catalog
+  entry) is kept and merely loses `theta-agent` from its `discovery_sources`:
+  this agent no longer watching something is not evidence that the thing is
+  gone.
+- **`services` is always present, even when empty** (since v2.22.0). An absent
+  key means "this agent reports nothing about services" and the directory prunes
+  nothing on it; `"services": []` means "none left" and prunes. Earlier agents
+  omitted the key when the list was empty, which is why nothing could safely be
+  pruned and a service deleted from `agent.yml` by hand kept a child resource
+  reporting stale health indefinitely.
 
 **The daemon re-reads `agent.yml` before each telemetry frame** (since v2.14.0).
 `theta-agent register` runs in its own process: it writes the service into
@@ -219,6 +280,20 @@ Sent immediately on a successful connection.
   - `site_public_ip`: (string, optional) the home site's egress address. A
     weaker fallback: CGNAT gives unrelated sites the same one, and a multi-WAN
     site has several. Used only when no LAN endpoint is reachable.
+  - `site_name`: (string, optional) the site this host belongs to, for display
+    in the tray.
+  - `organization_name`: (string, optional) the white-label name the directory
+    is configured with. The agent shows it in the tray title/tooltip and on the
+    Windows logon tile, overriding `credential_provider_name` in `agent.yml`
+    (docs/WHITE_LABELING.md).
+
+  > **The credentials half of this frame is load-bearing**, and the optional
+  > half must never be able to cost an agent the whole frame. An agent that
+  > enrolled with a join key and does not receive its `auth_token` persists
+  > nothing, re-dials with the join key, collides with its own hostname and is
+  > locked out (§1.1). A server-side error while computing the hints above did
+  > exactly that for every agent in the fleet, so each optional piece is now
+  > gathered independently of the rest.
 
   > Both hints are optional and the agent must cope without them. With
   > **neither**, it assumes it is **away** — a false "home" silently disables
@@ -235,6 +310,13 @@ These commands are executed if the corresponding capability is enabled in `agent
 ### 4.2 High-Risk Commands (Signed)
 These commands **require** an Ed25519 signature in the payload. The agent verifies the signature against the `public_key` in its config.
 
+> This table is the contract, and the server keeps its own copy of it
+> (`HIGH_RISK_COMMANDS` in `routes/api_agent.js`) that decides what gets signed
+> on the way out. The two drifting apart is silent in both directions: a command
+> the agent verifies and the server does not sign is refused at the far end with
+> "signature verification failed", which looks like a key problem and is not.
+> Anything added here must be added there.
+
 **Signature Format**:
 - The `signature` field contains the base64-encoded Ed25519 signature of the `{type, payload}` envelope (contract G-1): the command's `type` is bound into the canonical bytes alongside the payload, and the `signature` key is omitted. Binding `type` in prevents a signature for one command type from being replayed as another (no type-portable replay).
 
@@ -246,7 +328,8 @@ These commands **require** an Ed25519 signature in the payload. The agent verifi
 | `arbitrary_bash` | `{ "script": "...", "signature": "..." }` | Executes raw bash script. |
 | `update_binary` | `{ "url": "...", "sha256": "...", "signature": "..." }` | Downloads, verifies, and replaces the agent binary. |
 | `render_secrets` | `{ "signature": "..." }` | Renders the configured secret templates to their targets (DESIGN.md §5). |
-| `iam_apply` | `{ "node_id", "revision", "access_control", "signature" }` | Applies node IAM: sudo rules, SSH keys, access control, revocation (DESIGN.md §6). |
+| `iam_apply` | `{ "node_id", "revision", "access_control", "signature" }` | Applies node IAM: sudo rules, SSH keys, access control, revocation (DESIGN.md §6). See §4.6. |
+| `zpool_scrub` | `{ "pool": "...", "signature": "..." }` | Starts a scrub of a ZFS pool (gated by `capabilities.storage`). |
 | `register_service` | `{ "service": "...", "subtype": "...", "signature": "..." }` | Registers a systemd service as a child resource of this host (gated by `capabilities.service_registration`). |
 | `unregister_service` | `{ "service": "...", "signature": "..." }` | Removes a registered service's child resource (gated by `capabilities.service_registration`). |
 | `shutdown` | `{ "signature": "..." }` | Powers the host off (gated by `capabilities.reboot`). |
@@ -356,6 +439,31 @@ instead and says so in its response rather than silently doing something else.
 The response payload carries `subAction`, `output` and `error`. A failure is
 reported rather than masked, so "nothing happened" is distinguishable from
 "done".
+
+### 4.6 `iam_apply` — who sent it, and what it carries
+
+The directory builds this payload from the group model and sends it from
+`POST /api/agent/nodes/:id/iam`; `GET` on the same path returns exactly what
+would be sent without sending it. It is **operator-triggered, not pushed on
+connect**, unlike `configure_ldap`: the agent writes
+`/etc/security/access.conf`, which ends in `-:ALL:ALL`, so applying a login
+policy is a change that can lock people out of a machine — not something a
+reconnect should set off across a fleet.
+
+Of the four `access_control` fields, only `allowed_login_groups` is derived:
+
+| Field | Sent | Why |
+| :--- | :--- | :--- |
+| `allowed_login_groups` | yes | The group model already answers "who may reach this host" (docs/GROUPS.md), including grants inherited from an ancestor resource. `viewer`/`member` is catalog visibility, not a shell, so only `access` and above appears. |
+| `sudo_rules` | **no** | The only rule derivable from "this group has admin here" is `ALL/ALL` — the landmine removed from the LDAP side (gaps.md H12). Scoped sudo is design gap D5. |
+| `ssh_keys` | **no** | The agent serves an `AuthorizedKeysCommand` per login; a pushed snapshot goes stale. |
+| `revoke_users` | **no** | Needs a trigger model (DESIGN.md §6 calls it TBD). A list computed at push time names people who are already gone. |
+
+The agent writes `+:root:ALL` as the first line of `access.conf` whatever the
+directory sent. The file denies everything not listed, and root at the console is
+the only way back into a host whose pushed group list turns out not to cover its
+administrators — a remote policy push must not be able to make a host
+unrecoverable.
 
 ## 5. Cryptographic Verification Process
 
@@ -504,7 +612,7 @@ Pushed on every state change.
 | `set_auto_vpn` | `value` (bool) | Persists the auto-connect preference to `agent.yml`. |
 | `vpn_connect` / `vpn_disconnect` | — | Brings the tunnel up or down now. |
 | `set_exit` | `site_id` (`*int`) | Routes this device through a site; **`null`/absent means local breakout**. |
-| `reinit` | — | Blanks enrolment so the agent re-enrols on reconnect. |
+| `reinit` | — | Blanks enrolment so the agent re-enrols on reconnect, keeping the old token as the `prev_token` proof (§1.1). **Refused** when `agent.yml` holds an `auth_token` but no `join_key`: there would be nothing left to authenticate with, and only an operator editing the file by hand could recover the host. Same guard as `theta-agent reset-enrollment`. |
 | `register_service` / `unregister_service` | `service` (string), `subtype` (string, optional) | Sent by the **CLI** (`theta-agent register/unregister`), not the tray: the daemon pushes the frame over its own WebSocket. The CLI never opens a competing connection — the directory allows one connection per agent, so a second one supersedes the daemon's (4002) and the frame is lost. |
 | `open_config` | — | **Deprecated.** See §7.3. |
 

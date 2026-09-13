@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -206,10 +205,7 @@ func TestWireGuardApplyActivationDependsOnState(t *testing.T) {
 			if len(mockConn.Messages) != 1 {
 				t.Fatalf("expected 1 response, got %d", len(mockConn.Messages))
 			}
-			var resp map[string]string
-			if err := json.Unmarshal(mockConn.Messages[0], &resp); err != nil {
-				t.Fatal(err)
-			}
+			resp := decodeResponse(t, mockConn.Messages[0])
 			if resp["status"] != tc.wantStatus {
 				t.Errorf("status = %q, want %q (%q)", resp["status"], tc.wantStatus, resp["message"])
 			}

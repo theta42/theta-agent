@@ -407,7 +407,7 @@ func TestHandleCommand(t *testing.T) {
 
 			msg := tc.msg
 			if tc.signed {
-			msg.Payload = sign(t, msg.Type, msg.Payload)
+				msg.Payload = sign(t, msg.Type, msg.Payload)
 			}
 			handleCommand(cm, msg, mockConn, mockExec, nil)
 
@@ -425,10 +425,7 @@ func TestHandleCommand(t *testing.T) {
 				t.Fatalf("expected 1 response message, got %d", len(mockConn.Messages))
 			}
 
-			var resp map[string]string
-			if err := json.Unmarshal(mockConn.Messages[0], &resp); err != nil {
-				t.Fatalf("failed to unmarshal response: %v", err)
-			}
+			resp := decodeResponse(t, mockConn.Messages[0])
 
 			if resp["status"] != tc.expectedStatus {
 				t.Errorf("expected status %q, got %q", tc.expectedStatus, resp["status"])
@@ -656,23 +653,43 @@ func TestUpdateBinaryNotGatedOnArbitraryBash(t *testing.T) {
 	msg := WSMessage{
 		Type: "update_binary",
 		Payload: sign(t, "update_binary", map[string]interface{}{
- 			"url":    srv.URL,
- 			"sha256": sum,
- 		}),
+			"url":    srv.URL,
+			"sha256": sum,
+		}),
 	}
 	handleCommand(cm, msg, mockConn, &MockExecutor{}, nil)
 
 	if len(mockConn.Messages) != 1 {
 		t.Fatalf("expected 1 response, got %d", len(mockConn.Messages))
 	}
-	var resp map[string]string
-	if err := json.Unmarshal(mockConn.Messages[0], &resp); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
+	resp := decodeResponse(t, mockConn.Messages[0])
 	if resp["status"] != "ok" {
 		t.Fatalf("update_binary with arbitrary_bash:false returned status %q, want ok (message %q)", resp["status"], resp["message"])
 	}
 	if !stub.applied {
 		t.Error("update_binary was not applied")
 	}
+}
+
+// decodeResponse unwraps a response frame and asserts the {type, payload}
+// envelope PROTOCOL.md 3.4 requires. The directory drops any frame without a
+// string `type`, so an agent that answers with a bare {status, message} is
+// talking to nobody -- which is exactly what it did until v2.22.0, and what
+// these tests could not see while they read the payload straight off the wire.
+func decodeResponse(t *testing.T, raw []byte) map[string]string {
+	t.Helper()
+	var env struct {
+		Type    string            `json:"type"`
+		Payload map[string]string `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal response: %v (raw: %s)", err, raw)
+	}
+	if env.Type != "response" {
+		t.Fatalf("response frame type = %q, want \"response\" (raw: %s)", env.Type, raw)
+	}
+	if env.Payload == nil {
+		t.Fatalf("response frame carried no payload (raw: %s)", raw)
+	}
+	return env.Payload
 }

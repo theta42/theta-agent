@@ -161,6 +161,13 @@ func applySSHKeys(keys []SSHKey, exec Executor) error {
 // everything else.
 func applyAccessControl(groups []string, exec Executor) error {
 	var b strings.Builder
+	// root first, always, whatever the directory sent. The file ends in
+	// `-:ALL:ALL`, so a pushed group list that happens not to cover the people
+	// who administer this machine locks every one of them out -- including root
+	// at the console, who is in no LDAP group and is the only way back in. A
+	// remote policy push must not be able to make a host unrecoverable; that is
+	// not a policy decision the directory gets to make.
+	b.WriteString("+:root:ALL\n")
 	for _, g := range groups {
 		if g != "" {
 			fmt.Fprintf(&b, "+:%s:ALL\n", g)

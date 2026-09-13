@@ -35,6 +35,7 @@ type Capabilities struct {
 	// commands, even if it holds the signing key.
 	Storage bool `yaml:"storage"`
 }
+
 // SecretTarget maps a local template to a rendered target file and an optional
 // post-render reload command (DESIGN.md §5).
 type SecretTarget struct {
@@ -61,11 +62,19 @@ type Config struct {
 	// the server exchanges it for a per-agent AuthToken (written back to this
 	// file), so it is a bootstrap value, not a long-term credential. Used only
 	// when AuthToken is empty.
-	JoinKey    string         `yaml:"join_key"`
-	Location   string         `yaml:"location"`
-	PublicKey  string         `yaml:"public_key"`  // Ed25519 public key for signed commands
-	LdapSocket string         `yaml:"ldap_socket"` // local LDAP tunnel socket (DESIGN.md §4)
-	Secrets    []SecretTarget `yaml:"secrets"`     // secret templates to render (DESIGN.md §5)
+	JoinKey string `yaml:"join_key"`
+	// PrevAuthToken is the token this host held before its enrollment was
+	// cleared. It is NOT a credential we present: it is the proof of continuity
+	// the directory requires to let a join key re-enroll a hostname it already
+	// knows (contract G-2, sent as ?prev_token= on the join dial). Without it a
+	// host that re-enrolls against the same directory collides with its own
+	// name and is rejected 4001 forever -- which is what `reset-enrollment` and
+	// the tray's re-enroll both did.
+	PrevAuthToken string         `yaml:"prev_auth_token"`
+	Location      string         `yaml:"location"`
+	PublicKey     string         `yaml:"public_key"`  // Ed25519 public key for signed commands
+	LdapSocket    string         `yaml:"ldap_socket"` // local LDAP tunnel socket (DESIGN.md §4)
+	Secrets       []SecretTarget `yaml:"secrets"`     // secret templates to render (DESIGN.md §5)
 	// Services are the services this agent has registered with the directory as
 	// children of its host. Kept in agent.yml so the running daemon knows which
 	// per-service metrics to report without the directory having to push the list
@@ -165,6 +174,13 @@ func NewConfigManager(path string) (*ConfigManager, error) {
 }
 
 // Get returns a copy of the current configuration.
+// Path is where this manager's agent.yml lives. The tray reads it off the
+// status stream (PROTOCOL.md 7.3) and log lines name it so an operator knows
+// which file to edit.
+func (cm *ConfigManager) Path() string {
+	return cm.configPath
+}
+
 func (cm *ConfigManager) Get() *Config {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -259,6 +275,9 @@ func (cm *ConfigManager) PersistEnrollment(token, publicKey string) error {
 		out = setYamlScalar(out, "public_key", publicKey)
 	}
 	out = setYamlScalar(out, "join_key", "")
+	// Spent: the directory has accepted it and issued a new token. Keeping a
+	// superseded credential on disk buys nothing and is one more thing to leak.
+	out = setYamlScalar(out, "prev_auth_token", "")
 
 	// Same permissions the installer sets: this file now holds a credential.
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
@@ -315,8 +334,18 @@ func (cm *ConfigManager) ClearEnrollment() error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", cm.configPath, err)
 	}
+	// Preserve the token we are about to drop as the continuity proof for the
+	// re-enrollment dial (contract G-2). Blanking it outright is what made
+	// re-enrollment against the SAME directory impossible: the join key dials,
+	// the hostname is already registered, and with no ?prev_token= the server
+	// rejects it 4001 and the agent backs off for five minutes, forever.
+	prev := cm.current.PrevAuthToken
+	if tok := strings.TrimSpace(cm.current.AuthToken); tok != "" {
+		prev = tok
+	}
 	out := setYamlScalar(string(raw), "auth_token", "")
 	out = setYamlScalar(out, "public_key", "")
+	out = setYamlScalar(out, "prev_auth_token", prev)
 	if err := os.WriteFile(cm.configPath, []byte(out), 0600); err != nil {
 		return fmt.Errorf("write %s: %w", cm.configPath, err)
 	}
@@ -384,6 +413,7 @@ func validateServiceName(name string) error {
 	}
 	return nil
 }
+
 // PersistService adds (or, when remove is true, removes) a service of the given
 // subtype in the `services:` list in agent.yml. Like the enrollment/auto_vpn
 // edits it is line-based rather than a YAML round-trip so comments and

@@ -254,9 +254,20 @@ func TestClearEnrollment(t *testing.T) {
 	if cfg.AuthToken != "" || cfg.PublicKey != "" {
 		t.Errorf("expected cleared credentials, got token=%q pub=%q", cfg.AuthToken, cfg.PublicKey)
 	}
+	// The token moves to prev_auth_token rather than vanishing: a join-key
+	// re-enrollment has to prove it is the same host the directory already
+	// knows (contract G-2) or the server rejects it 4001 on every dial.
+	if cfg.PrevAuthToken != "tok-abc" {
+		t.Errorf("expected the old token preserved as prev_auth_token, got %q", cfg.PrevAuthToken)
+	}
 	out, _ := os.ReadFile(path)
-	if strings.Contains(string(out), "tok-abc") {
-		t.Errorf("old token should be gone from file, got:\n%s", out)
+	if !strings.Contains(string(out), `prev_auth_token: "tok-abc"`) {
+		t.Errorf("prev_auth_token should be on disk, got:\n%s", out)
+	}
+	// Anchored to the line: `auth_token: "tok-abc"` is a substring of
+	// `prev_auth_token: "tok-abc"`, which is precisely the line we want there.
+	if strings.Contains(string(out), "\nauth_token: \"tok-abc\"") {
+		t.Errorf("auth_token should no longer hold the old token, got:\n%s", out)
 	}
 }
 
