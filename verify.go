@@ -50,10 +50,12 @@ func verifyConfigAt(path string) (problems []verifyProblem, checked []string) {
 		checked = append(checked, "server_url is a URL with a host")
 	}
 
+	enrolled := cfg.AuthToken != ""
+	awaitingEnrollment := !enrolled && cfg.JoinKey != ""
 	switch {
-	case cfg.AuthToken != "":
+	case enrolled:
 		checked = append(checked, "auth_token present (this host has enrolled)")
-	case cfg.JoinKey != "":
+	case awaitingEnrollment:
 		checked = append(checked, "join_key present (this host has not enrolled yet)")
 	default:
 		add(true, "neither auth_token nor join_key is set -- there is nothing to authenticate with")
@@ -62,14 +64,28 @@ func verifyConfigAt(path string) (problems []verifyProblem, checked []string) {
 	// public_key is the DIRECTORY's Ed25519 signing key, and every signed
 	// command is checked against it. A malformed one is silent: the agent
 	// connects, and then rejects everything the directory asks it to do.
-	if cfg.PublicKey == "" {
+	//
+	// Empty is only a fault once this host holds its own token. On the join-key
+	// path the directory ISSUES the public key in the enrolment config frame
+	// and the agent writes it to agent.yml (PersistEnrollment), so an empty one
+	// before the first connect is the designed state -- and failing it here
+	// rejected the one-line install command the directory's own resource page
+	// hands out, which passes --url and --join-key and nothing else. The
+	// installer then aborted before installing the service, so the documented
+	// way to enrol a host could not complete at all.
+	switch {
+	case cfg.PublicKey == "" && awaitingEnrollment:
+		checked = append(checked, "public_key not set yet (the directory issues it during enrolment)")
+	case cfg.PublicKey == "":
 		add(true, "public_key is empty -- signed commands from the directory cannot be verified, so none will run")
-	} else if raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cfg.PublicKey)); err != nil {
-		add(true, "public_key is not valid base64: %v", err)
-	} else if len(raw) != 32 {
-		add(true, "public_key decodes to %d bytes, not the 32 an Ed25519 public key needs", len(raw))
-	} else {
-		checked = append(checked, "public_key is a 32-byte Ed25519 key")
+	default:
+		if raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cfg.PublicKey)); err != nil {
+			add(true, "public_key is not valid base64: %v", err)
+		} else if len(raw) != 32 {
+			add(true, "public_key decodes to %d bytes, not the 32 an Ed25519 public key needs", len(raw))
+		} else {
+			checked = append(checked, "public_key is a 32-byte Ed25519 key")
+		}
 	}
 
 	problems = append(problems, verifyWireGuardKey()...)
@@ -105,6 +121,15 @@ func verifyWireGuardKey() []verifyProblem {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// The key is mode 0600 root-only by design, so a non-root operator
+		// running `theta-agent verify` by hand cannot read it and gets a
+		// permission error that says nothing about whether the key is good.
+		// Reporting that as fatal told them "1 problem will stop this agent
+		// working" about a perfectly healthy install. For the service itself
+		// (root) a read failure is still a real fault.
+		if os.IsPermission(err) && os.Geteuid() != 0 {
+			return []verifyProblem{{Fatal: false, Message: fmt.Sprintf("WireGuard key %s cannot be read as this user -- re-run as root to check it", path)}}
+		}
 		return []verifyProblem{{Fatal: true, Message: fmt.Sprintf("WireGuard key %s cannot be read: %v", path, err)}}
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))

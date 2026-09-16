@@ -1,3 +1,9 @@
+## [v2.22.2] - 2026-09-16
+
+### Fixed
+- **`verify` Rejected The Only Install Command The Directory Hands Out**: the v2.22.0 pre-flight check treated an empty `public_key` as fatal unconditionally, but on the join-key path there is nothing that could have filled it in yet — the directory issues the public key in the enrolment config frame, and `PersistEnrollment` writes it to `agent.yml` on first connect. So the copy-paste line from Directory → Install Agent (`install.sh --url … --join-key …`, which is what the resource page generates and what `install.sh`'s own usage text calls "the normal path") wrote a config with `public_key: ""`, failed its own verification, and aborted the installer *before* the service was installed. The host was left with a binary, a config, and no agent. Empty is now accepted only while a host is awaiting enrolment — with `auth_token` set it is still fatal, since an enrolled host that has no signing key will silently refuse every command it is sent, which is the failure the check exists to catch. A malformed key (bad base64, wrong length) stays fatal on both paths: the directory only ever sends a good one, so garbage there came from a bad `--public-key` and enrolment will not repair it. Regression test covers the exact config `install.sh` writes for the join-key flow, which the old tests missed because every one of them set a valid `public_key` alongside the join key.
+- **`verify` Failed As A Non-Root User Because The WireGuard Key Is Root-Only**: `wg_private.key` is mode 0600 owned by root by design, so an operator running `theta-agent verify` by hand got `permission denied` reported as a fatal problem — "1 problem(s) will stop this agent working" about a completely healthy install. A permission error when not running as root is now a warning that says to re-run as root; for the service itself (root) an unreadable key is still fatal, because then it really is broken.
+
 ## [v2.22.1] - 2026-09-13
 
 ### Fixed

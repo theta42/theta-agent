@@ -63,6 +63,36 @@ func TestVerifyCatchesAnUnusablePublicKey(t *testing.T) {
 			t.Errorf("%s public_key was accepted", name)
 		}
 	}
+
+	// ...but a malformed key is still fatal before enrolment. Only ABSENT is
+	// allowed there, because the directory supplies it; garbage means somebody
+	// passed a bad --public-key, and enrolment will not overwrite it with
+	// anything better than what it already sends.
+	for name, key := range map[string]string{
+		"not base64": "!!!! not base64 !!!!",
+		"wrong size": base64.StdEncoding.EncodeToString(make([]byte, 16)),
+	} {
+		p := writeConfig(t, "server_url: https://sso.example.com\njoin_key: tjk_x\npublic_key: \""+key+"\"\n")
+		if f := fatalMessages(verifyConfigAtProblems(p)); len(f) == 0 {
+			t.Errorf("%s public_key was accepted on the join-key path", name)
+		}
+	}
+}
+
+// The exact config install.sh writes for the command the directory's resource
+// page hands out -- `install.sh --url ... --join-key ...` and nothing else.
+// public_key is empty because the directory only issues it in the enrolment
+// config frame, which cannot have arrived yet. Failing this made `verify` abort
+// the installer before it installed the service, so the documented way to
+// onboard a host could not complete.
+func TestVerifyAcceptsTheJoinKeyInstallShape(t *testing.T) {
+	wgKeyPathOverride = filepath.Join(t.TempDir(), "absent.key")
+	defer func() { wgKeyPathOverride = "" }()
+
+	p := writeConfig(t, "server_url: \"https://sso.example.com\"\nauth_token: \"\"\njoin_key: \"tjk_abc\"\npublic_key: \"\"\n")
+	if f := fatalMessages(verifyConfigAtProblems(p)); len(f) != 0 {
+		t.Fatalf("the join-key install shape was rejected: %v", f)
+	}
 }
 
 func verifyConfigAtProblems(p string) []verifyProblem {
