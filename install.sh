@@ -18,6 +18,40 @@ NC='\033[0m' # No Color
 log() { echo -e "${GREEN}[+]${NC} $1"; }
 error() { echo -e "${RED}[!]${NC} $1"; exit 1; }
 
+# An install that stops the agent and then aborts must put it back.
+#
+# Step 6 deliberately does not restart an agent that was already stopped when
+# the installer began, so that upgrading does not override an operator who had
+# stopped it on purpose. That rule is right, but it cannot tell "the operator
+# stopped this" from "the PREVIOUS run of this very script stopped it and then
+# died" -- and the second one poisons every run after it. A failed install
+# leaves the agent down; the next install sees it down, decides the stop was
+# deliberate, and reports success while leaving the host unmanaged. Exactly
+# that happened when the v2.22.0 `verify` check rejected the join-key install
+# path: run one stopped the agent and aborted, and run two -- with the fix in
+# it -- politely left the host with no agent running.
+#
+# So: if we are the ones who stopped it and we never reached the start step,
+# start it again on the way out. Restoring the state the host was in is always
+# defensible; silently leaving it unmanaged is not.
+AGENT_STOPPED_BY_INSTALLER=0
+AGENT_START_REACHED=0
+restore_agent_on_abort() {
+  _status=$?
+  if [ "$_status" -ne 0 ] \
+     && [ "$AGENT_STOPPED_BY_INSTALLER" -eq 1 ] \
+     && [ "$AGENT_START_REACHED" -eq 0 ] \
+     && command -v systemctl >/dev/null 2>&1; then
+    echo -e "${RED}[!]${NC} This install did not finish, and it had stopped theta-agent to do the upgrade."
+    echo -e "${RED}[!]${NC} Starting the previous agent again so this host is not left unmanaged."
+    systemctl start theta-agent >/dev/null 2>&1 \
+      && log "theta-agent restarted. It is running the configuration it had BEFORE this attempt." \
+      || echo -e "${RED}[!]${NC} Could not restart theta-agent. Start it with: systemctl start theta-agent"
+  fi
+  return "$_status"
+}
+trap restore_agent_on_abort EXIT
+
 # 1. Root check
 if [ "$(id -u 2>/dev/null || echo 1)" -ne 0 ]; then
   error "This script must be run as root."
@@ -249,6 +283,7 @@ if command -v systemctl >/dev/null 2>&1; then
   if systemctl is-active --quiet theta-agent 2>/dev/null; then
     AGENT_WAS_INSTALLED=1
     AGENT_WAS_RUNNING=1
+    AGENT_STOPPED_BY_INSTALLER=1
     log "An agent is already running -- stopping theta-agent before upgrading it."
     systemctl stop theta-agent >/dev/null 2>&1 || true
     # A stop can hang on an agent wedged in a syscall, and `systemctl stop`
@@ -529,7 +564,21 @@ if [ "$SECRETS_GROUP" != "root" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" !
 fi
 chown -R "root:$SECRETS_GROUP" "$CONFIG_DIR" 2>/dev/null || true
 chmod 755 "$CONFIG_DIR"
-chmod 644 "$CONFIG_FILE"
+# 0600, not 0644: agent.yml holds the join key (a FLEET-WIDE credential, good
+# for enrolling any host) and, after enrolment, this host's own auth token.
+# At 0644 every local user on the machine could read both. The agent already
+# treats 0600 as correct -- PersistEnrollment writes the file at 0600 and
+# chmods it explicitly afterwards -- so the installer was both widening the
+# permissions and contradicting the daemon, and the window only closed if and
+# when enrolment succeeded. On a host that never enrolled (which is precisely
+# the host an operator is re-running the installer on) the join key stayed
+# world-readable indefinitely.
+#
+# The tray's "Open Config" menu item opens this path in a desktop editor and
+# will now need privileges -- but it already did the moment the agent enrolled
+# once, so this only makes the behaviour consistent instead of depending on
+# whether the host had connected yet.
+chmod 600 "$CONFIG_FILE"
 
 # 4c. Setup Desktop Tray Icon companion
 TRAY_BINARY_NAME="theta-agent-tray-${OS_NAME}-${ARCH_NAME}"
@@ -738,13 +787,19 @@ EOF
 # started -- an operator who had deliberately stopped the agent on this host
 # should not find it running again because they installed a newer build.
 log "Enabling and starting Theta Agent..."
+AGENT_START_REACHED=1
 systemctl daemon-reload
 systemctl enable theta-agent
 if [ "$AGENT_WAS_INSTALLED" -eq 0 ] || [ "$AGENT_WAS_RUNNING" -eq 1 ]; then
   systemctl start theta-agent
 else
-  log "theta-agent was stopped before this upgrade -- leaving it stopped."
-  log "Start it with: systemctl start theta-agent"
+  # Said loudly rather than quietly: "installation complete" two lines below is
+  # otherwise the last thing the operator reads, and a host that is enrolled,
+  # enabled and NOT running looks identical to a working one from the install
+  # log alone.
+  echo -e "${RED}[!]${NC} theta-agent was already stopped before this upgrade, so it has been"
+  echo -e "${RED}[!]${NC} left stopped. THIS HOST IS NOT RUNNING AN AGENT."
+  echo -e "${RED}[!]${NC} If that is not what you wanted: systemctl start theta-agent"
 fi
 
 log "Theta Agent installation complete!"
