@@ -1,3 +1,12 @@
+## [v2.22.3] - 2026-09-16
+
+### Fixed
+- **A Failed Install Left The Host Unmanaged, And Poisoned Every Install After It**: `install.sh` stops a running agent before replacing its binary, and step 6 deliberately does not restart an agent that was already stopped when the installer began — so that an upgrade cannot override an operator who stopped it on purpose. That rule cannot tell "the operator stopped this" from "the previous run of this very script stopped it and then aborted", and the second case is self-perpetuating: run one stops the agent and dies, run two sees it stopped, decides the stop was deliberate, prints `Theta Agent installation complete!` and leaves the machine with no agent running. Observed for real on the back of the v2.22.2 `verify` bug — the run carrying the *fix* is the one that left the host down. The installer now records that **it** was the one that stopped the agent, and an `EXIT` trap restarts it if the script exits non-zero before reaching the start step; the original exit status is preserved. Restoring the state the host was in is always defensible, and it is strictly better than a host that silently drops out of the fleet.
+- **"Leaving It Stopped" Was A Green Success Line**: the branch that deliberately declines to start the agent logged at `[+]` and was immediately followed by `Theta Agent installation complete!`, so an install that ended with no agent running read exactly like one that worked. It is now a red warning that says `THIS HOST IS NOT RUNNING AN AGENT` and how to start it.
+
+### Security
+- **`agent.yml` Was Installed World-Readable With A Fleet Credential In It**: `install.sh` ran `chmod 644` on a file holding the **join key** — which is fleet-wide and can enrol any host — and, after enrolment, this host's own auth token. Every local user on the machine could read both. The daemon has always disagreed: `PersistEnrollment` writes the file at 0600 and chmods it explicitly afterwards. So the installer was widening permissions the agent then tightened, and the exposure window closed only if enrolment succeeded — on a host that never enrolled, which is exactly the host someone re-runs the installer on, the join key stayed world-readable indefinitely. Now 0600 at install time. The tray's "Open Config" menu item needs privileges to open it, as it already did on any host that had enrolled once.
+
 ## [v2.22.2] - 2026-09-16
 
 ### Fixed
